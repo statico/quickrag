@@ -138,6 +138,12 @@ export class RAGDatabase {
     const maxTextsPerBatch = 4;
     const indexedChunks: IndexedChunk[] = [];
     
+    // Calculate total batches for accurate progress reporting
+    const totalChars = chunks.reduce((sum, chunk) => sum + chunk.text.length, 0);
+    const estimatedBatchesByChars = Math.ceil(totalChars / maxCharsPerBatch);
+    const estimatedBatchesByCount = Math.ceil(chunks.length / maxTextsPerBatch);
+    let totalBatches = Math.max(estimatedBatchesByChars, estimatedBatchesByCount, 1);
+    
     let batchNum = 0;
     let i = 0;
     while (i < chunks.length) {
@@ -163,7 +169,10 @@ export class RAGDatabase {
       
       const texts = batch.map((chunk) => chunk.text);
       batchNum++;
-      console.log(`Embedding batch ${batchNum} (${batch.length} chunks, ${batchCharCount.toLocaleString()} chars)...`);
+      if (batchNum > totalBatches) {
+        totalBatches = batchNum;
+      }
+      console.log(`Embedding batch ${batchNum}/${totalBatches}...`);
       const embeddings = await embeddingProvider.embedBatch(texts);
       
       for (let j = 0; j < batch.length; j++) {
