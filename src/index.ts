@@ -14,7 +14,7 @@ const program = new Command();
 program
   .name("quickrag")
   .description("A fast and flexible RAG tool for indexing and querying documents")
-  .version("0.1.0");
+  .version("1.0.0");
 
 program
   .command("init")

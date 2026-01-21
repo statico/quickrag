@@ -8,7 +8,7 @@ class Quickrag < Formula
   desc "A fast and flexible RAG tool for indexing and querying documents"
   homepage "https://github.com/statico/quickrag"
   url "https://github.com/statico/quickrag/archive/refs/heads/main.tar.gz"
-  version "0.1.0"
+  version "1.0.0"
   license "MIT"
   head "https://github.com/statico/quickrag.git", branch: "main"
 
