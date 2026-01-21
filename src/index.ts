@@ -82,6 +82,7 @@ program
   .option("-o, --output <path>", "Output database path", "index.rag")
   .option("--chunk-size <number>", "Chunk size in characters")
   .option("--chunk-overlap <number>", "Chunk overlap in characters")
+  .option("--clear", "Clear existing index before indexing (default: skip already indexed files)")
   .action(async (directory, options) => {
     const config = await loadConfig();
     const embeddingOpts = await parseEmbeddingOptions(options, config);
@@ -112,7 +113,8 @@ program
       directory, 
       options.output, 
       embeddingProvider,
-      { chunkSize, chunkOverlap }
+      { chunkSize, chunkOverlap },
+      options.clear || false
     );
   });
 

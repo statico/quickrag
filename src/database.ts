@@ -16,6 +16,7 @@ export interface IndexedChunk {
 export class RAGDatabase {
   private dbPath: string;
   private table: lancedb.Table | null = null;
+  private fileIndexTable: lancedb.Table | null = null;
   private dimensions: number;
   private db: Awaited<ReturnType<typeof lancedb.connect>> | null = null;
 
@@ -31,7 +32,14 @@ export class RAGDatabase {
   async initialize(): Promise<void> {
     this.db = await lancedb.connect(this.dbPath);
     
-    // Check if table exists
+    // Check if file index table exists
+    try {
+      this.fileIndexTable = await this.db.openTable("file_index");
+    } catch {
+      this.fileIndexTable = null;
+    }
+    
+    // Check if documents table exists
     try {
       this.table = await this.db.openTable("documents");
       
@@ -122,14 +130,40 @@ export class RAGDatabase {
     console.log(`Indexing ${chunks.length} chunks...`);
     
     // Generate embeddings in batches
-    const batchSize = 100;
+    // Use character-count-based batching to respect API limits
+    // Limit: ~30K characters per batch (conservative estimate for token limits)
+    // VoyageAI has token limits: 120K tokens for voyage-3-large, etc.
+    // Rough estimate: 1 token ≈ 4 characters, so 30K chars ≈ 7.5K tokens (very conservative)
+    const maxCharsPerBatch = 30000;
+    const maxTextsPerBatch = 4;
     const indexedChunks: IndexedChunk[] = [];
     
-    for (let i = 0; i < chunks.length; i += batchSize) {
-      const batch = chunks.slice(i, i + batchSize);
-      const texts = batch.map((chunk) => chunk.text);
+    let batchNum = 0;
+    let i = 0;
+    while (i < chunks.length) {
+      const batch: typeof chunks = [];
+      let batchCharCount = 0;
       
-      console.log(`Embedding batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(chunks.length / batchSize)}...`);
+      while (i < chunks.length && batch.length < maxTextsPerBatch) {
+        const chunk = chunks[i];
+        const chunkChars = chunk.text.length;
+        
+        if (batch.length === 0 || (batchCharCount + chunkChars <= maxCharsPerBatch)) {
+          batch.push(chunk);
+          batchCharCount += chunkChars;
+          i++;
+        } else {
+          break;
+        }
+      }
+      
+      if (batch.length === 0) {
+        throw new Error(`Chunk at index ${i} is too large (${chunks[i].text.length} chars) for batch limit (${maxCharsPerBatch} chars)`);
+      }
+      
+      const texts = batch.map((chunk) => chunk.text);
+      batchNum++;
+      console.log(`Embedding batch ${batchNum} (${batch.length} chunks, ${batchCharCount.toLocaleString()} chars)...`);
       const embeddings = await embeddingProvider.embedBatch(texts);
       
       for (let j = 0; j < batch.length; j++) {
@@ -221,5 +255,170 @@ export class RAGDatabase {
 
     const count = await this.table.countRows();
     return { count };
+  }
+
+  async clearDatabase(): Promise<void> {
+    if (!this.db) {
+      throw new Error("Database not initialized. Call initialize() first.");
+    }
+    
+    try {
+      await this.db.dropTable("documents");
+    } catch {
+      // Table might not exist
+    }
+    
+    try {
+      await this.db.dropTable("file_index");
+    } catch {
+      // Table might not exist
+    }
+    
+    this.table = null;
+    this.fileIndexTable = null;
+  }
+
+  async getIndexedFiles(): Promise<Set<string>> {
+    if (!this.db) {
+      throw new Error("Database not initialized. Call initialize() first.");
+    }
+    
+    if (!this.fileIndexTable) {
+      return new Set();
+    }
+    
+    try {
+      const allFiles = await this.fileIndexTable
+        .query()
+        .toArray();
+      
+      return new Set(allFiles.map((row: Record<string, unknown>) => String(row.filePath || "")));
+    } catch {
+      return new Set();
+    }
+  }
+
+  async markFileIndexed(filePath: string, mtime: number): Promise<void> {
+    if (!this.db) {
+      throw new Error("Database not initialized. Call initialize() first.");
+    }
+    
+    if (!this.fileIndexTable) {
+      const initialData = [{
+        filePath,
+        mtime,
+        indexedAt: Date.now(),
+      }];
+      this.fileIndexTable = await this.db.createTable("file_index", initialData);
+      return;
+    }
+    
+    try {
+      const allFiles = await this.fileIndexTable.query().toArray();
+      let found = false;
+      for (const row of allFiles) {
+        const record = row as Record<string, unknown>;
+        if (String(record.filePath) === filePath) {
+          found = true;
+          break;
+        }
+      }
+      
+      if (found) {
+        await this.removeFileFromIndex(filePath);
+      }
+      
+      await this.fileIndexTable.add([{
+        filePath,
+        mtime,
+        indexedAt: Date.now(),
+      }]);
+    } catch (error) {
+      await this.fileIndexTable.add([{
+        filePath,
+        mtime,
+        indexedAt: Date.now(),
+      }]);
+    }
+  }
+
+  async removeFileFromIndex(filePath: string): Promise<void> {
+    if (!this.fileIndexTable) {
+      return;
+    }
+    
+    try {
+      const allFiles = await this.fileIndexTable.query().toArray();
+      const toRemove: any[] = [];
+      for (const row of allFiles) {
+        const record = row as Record<string, unknown>;
+        if (String(record.filePath) === filePath) {
+          toRemove.push(record);
+        }
+      }
+      
+      if (toRemove.length > 0) {
+        for (const row of toRemove) {
+          try {
+            await this.fileIndexTable.delete(`filePath = '${String(row.filePath).replace(/'/g, "''")}'`);
+          } catch {
+            // Continue if delete fails
+          }
+        }
+      }
+    } catch {
+      // If query fails, continue
+    }
+  }
+
+  async isFileIndexed(filePath: string, mtime: number): Promise<boolean> {
+    if (!this.fileIndexTable) {
+      return false;
+    }
+    
+    try {
+      const allFiles = await this.fileIndexTable.query().toArray();
+      
+      for (const row of allFiles) {
+        const record = row as Record<string, unknown>;
+        if (String(record.filePath) === filePath) {
+          const indexedMtime = Number(record.mtime || 0);
+          return indexedMtime === mtime;
+        }
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  async removeFileChunks(filePath: string): Promise<void> {
+    if (!this.table) {
+      return;
+    }
+    
+    try {
+      const allChunks = await this.table.query().toArray();
+      
+      const idsToRemove: string[] = [];
+      for (const row of allChunks) {
+        const record = row as Record<string, unknown>;
+        if (String(record.filePath) === filePath) {
+          idsToRemove.push(String(record.id));
+        }
+      }
+      
+      if (idsToRemove.length > 0) {
+        for (const id of idsToRemove) {
+          try {
+            await this.table.delete(`id = '${id.replace(/'/g, "''")}'`);
+          } catch {
+            // Continue if delete fails
+          }
+        }
+      }
+    } catch {
+      // If query fails, continue
+    }
   }
 }

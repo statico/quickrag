@@ -1,6 +1,11 @@
 import { readdir, readFile, stat } from "fs/promises";
 import { join, extname } from "path";
 
+export interface FileInfo {
+  path: string;
+  mtime: number;
+}
+
 export interface DocumentChunk {
   text: string;
   filePath: string;
@@ -32,20 +37,27 @@ const SUPPORTED_EXTENSIONS = [".txt", ".md", ".markdown"];
 export async function parseDirectory(
   dirPath: string,
   options: ChunkingOptions
-): Promise<DocumentChunk[]> {
+): Promise<{ chunks: DocumentChunk[]; files: FileInfo[] }> {
   validateChunkingOptions(options);
   const chunks: DocumentChunk[] = [];
-  const files = await getAllFiles(dirPath);
+  const files: FileInfo[] = [];
+  const filePaths = await getAllFiles(dirPath);
   
-  for (const file of files) {
-    const ext = extname(file).toLowerCase();
+  for (const filePath of filePaths) {
+    const ext = extname(filePath).toLowerCase();
     if (SUPPORTED_EXTENSIONS.includes(ext)) {
-      const fileChunks = await parseFile(file, options);
-      chunks.push(...fileChunks);
+      try {
+        const fileStat = await stat(filePath);
+        files.push({ path: filePath, mtime: fileStat.mtimeMs });
+        const fileChunks = await parseFile(filePath, options);
+        chunks.push(...fileChunks);
+      } catch (error) {
+        console.warn(`Skipping file ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   }
   
-  return chunks;
+  return { chunks, files };
 }
 
 async function getAllFiles(dirPath: string): Promise<string[]> {
@@ -65,7 +77,7 @@ async function getAllFiles(dirPath: string): Promise<string[]> {
   return files;
 }
 
-async function parseFile(
+export async function parseFile(
   filePath: string,
   options: ChunkingOptions
 ): Promise<DocumentChunk[]> {
@@ -73,7 +85,7 @@ async function parseFile(
   return chunkText(content, filePath, options);
 }
 
-function chunkText(
+export function chunkText(
   text: string,
   filePath: string,
   options: ChunkingOptions

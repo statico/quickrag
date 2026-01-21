@@ -1,5 +1,31 @@
 import type { EmbeddingProvider } from "./base.js";
 
+function sanitizeUTF8(text: string): string {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder("utf-8", { fatal: false });
+  
+  try {
+    let cleaned = text
+      .replace(/\uFFFD/g, "")
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "")
+      .normalize("NFKC");
+    
+    const encoded = encoder.encode(cleaned);
+    let decoded = decoder.decode(encoded);
+    
+    decoded = decoded.replace(/\uFFFD/g, "");
+    
+    const reencoded = encoder.encode(decoded);
+    const finalDecoded = decoder.decode(reencoded);
+    
+    return finalDecoded;
+  } catch {
+    return text
+      .replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "")
+      .normalize("NFKC");
+  }
+}
+
 export class VoyageAIEmbeddingProvider implements EmbeddingProvider {
   private apiKey: string;
   private model: string;
@@ -77,27 +103,97 @@ export class VoyageAIEmbeddingProvider implements EmbeddingProvider {
       return [];
     }
     
+    const filteredTexts = texts.filter(text => text.trim().length > 0);
+    if (filteredTexts.length === 0) {
+      if (!this.dimensionsInitialized) {
+        throw new Error("Cannot create embeddings for empty texts before dimensions are initialized");
+      }
+      return texts.map(() => new Array(this.dimensions).fill(0));
+    }
+    
+    if (filteredTexts.length !== texts.length) {
+      const emptyIndices = new Set<number>();
+      texts.forEach((text, idx) => {
+        if (text.trim().length === 0) {
+          emptyIndices.add(idx);
+        }
+      });
+      
+      const embeddings = await this.embedBatch(filteredTexts);
+      const result: number[][] = [];
+      let filteredIdx = 0;
+      const dims = this.dimensionsInitialized ? this.dimensions : embeddings[0]?.length || 1024;
+      for (let i = 0; i < texts.length; i++) {
+        if (emptyIndices.has(i)) {
+          result.push(new Array(dims).fill(0));
+        } else {
+          result.push(embeddings[filteredIdx++]);
+        }
+      }
+      return result;
+    }
+    
+    const sanitizedTexts = texts.map(text => sanitizeUTF8(text));
+    
+    const requestBody = {
+      model: this.model,
+      input: sanitizedTexts,
+      truncation: true,
+    };
+    
+    let requestBodyStr: string;
+    try {
+      requestBodyStr = JSON.stringify(requestBody);
+    } catch (error) {
+      throw new Error(`Failed to serialize request body: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    
     const response = await fetch(`${this.baseUrl}/embeddings`, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
+        "Content-Type": "application/json; charset=utf-8",
         Authorization: `Bearer ${this.apiKey}`,
       },
-      body: JSON.stringify({
-        model: this.model,
-        input: texts,
-      }),
+      body: requestBodyStr,
     });
 
     if (!response.ok) {
       let errorMessage: string;
+      let errorDetails: any = null;
+      let responseText: string = "";
       try {
-        const errorData = await response.json() as { error?: { message?: string } };
-        errorMessage = errorData.error?.message || `HTTP ${response.status}: ${response.statusText}`;
+        responseText = await response.text();
+        try {
+          errorDetails = JSON.parse(responseText);
+          const detail = errorDetails.detail || errorDetails.error?.message;
+          errorMessage = detail || JSON.stringify(errorDetails) || `HTTP ${response.status}: ${response.statusText}`;
+        } catch {
+          errorMessage = responseText || `HTTP ${response.status}: ${response.statusText}`;
+        }
       } catch {
-        errorMessage = await response.text() || `HTTP ${response.status}: ${response.statusText}`;
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
       }
-      throw new Error(`VoyageAI API error: ${errorMessage}`);
+      
+      if (errorMessage.includes("UTF-8") && texts.length > 1) {
+        console.warn(`Batch failed due to UTF-8 encoding issue, retrying texts individually...`);
+        const individualEmbeddings: number[][] = [];
+        for (let i = 0; i < texts.length; i++) {
+          try {
+            const singleEmbedding = await this.embedBatch([texts[i]]);
+            individualEmbeddings.push(singleEmbedding[0]);
+          } catch (singleError) {
+            console.warn(`Failed to embed text at index ${i}, using zero vector: ${singleError instanceof Error ? singleError.message : String(singleError)}`);
+            const dims = this.dimensionsInitialized ? this.dimensions : 1024;
+            individualEmbeddings.push(new Array(dims).fill(0));
+          }
+        }
+        return individualEmbeddings;
+      }
+      
+      const totalChars = texts.reduce((sum, t) => sum + t.length, 0);
+      const maxChars = Math.max(...texts.map(t => t.length));
+      const fullError = `VoyageAI API error: ${errorMessage} (batch size: ${texts.length}, total chars: ${totalChars}, max chunk chars: ${maxChars}, model: ${this.model})`;
+      throw new Error(fullError);
     }
 
     const data = await response.json() as { data?: Array<{ embedding?: number[] }> };

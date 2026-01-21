@@ -52,6 +52,9 @@ as Gustave Flaubert wrote to George Sand.”
 - **Flexible Document Parsing** - Automatically processes text and markdown files from directories
 - **LanceDB Integration** - Fast vector search using LanceDB with persistent storage (`.rag` files)
 - **Configurable Chunking** - Tunable chunk size and overlap for optimal retrieval
+- **Idempotent Indexing** - Automatically tracks indexed files and skips unchanged files
+- **Per-File Transactions** - All chunks for a file are indexed atomically (all or nothing)
+- **UTF-8 Sanitization** - Handles invalid characters from PDF conversions and other sources
 - **Configuration Management** - Centralized config file for API keys and settings
 - **TypeScript & Bun** - Built with modern TypeScript and powered by Bun for fast execution
 - **Easy to Use** - Simple CLI interface for indexing and querying your documents
@@ -298,6 +301,8 @@ Index a directory of documents:
 quickrag index ./documents --output my-docs.rag
 ```
 
+**Idempotent Indexing**: QuickRAG automatically tracks which files have been indexed and skips files that are already up to date. If a file's modification time changes, it will be re-indexed. This makes re-running the index command safe and efficient.
+
 Override chunking parameters:
 
 ```sh
@@ -309,6 +314,14 @@ Use a different provider:
 ```sh
 quickrag index ./documents --provider openai --model text-embedding-3-small --output my-docs.rag
 ```
+
+Clear existing index before indexing:
+
+```sh
+quickrag index ./documents --clear --output my-docs.rag
+```
+
+The `--clear` flag removes all existing indexed data before starting a fresh index. Without this flag, QuickRAG will only index new or modified files.
 
 ### Querying
 
