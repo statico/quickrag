@@ -22,7 +22,10 @@ export function formatResults(results: IndexedChunk[]): string {
   
   for (let i = 0; i < results.length; i++) {
     const result = results[i];
-    output += `[${i + 1}] ${result.filePath} (chunk ${result.chunkIndex})\n`;
+    const lineRange = result.startLine === result.endLine 
+      ? `line ${result.startLine}`
+      : `lines ${result.startLine}-${result.endLine}`;
+    output += `[${i + 1}] ${result.filePath} (${lineRange})\n`;
     output += `${"=".repeat(60)}\n`;
     output += `${result.text}\n\n`;
   }

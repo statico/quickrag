@@ -6,6 +6,7 @@ import { queryDatabase, formatResults } from "./query.js";
 import { OpenAIEmbeddingProvider } from "./embeddings/openai.js";
 import { VoyageAIEmbeddingProvider } from "./embeddings/voyageai.js";
 import { OllamaEmbeddingProvider } from "./embeddings/ollama.js";
+import { loadConfig, createDefaultConfig, type QuickRAGConfig } from "./config.js";
 import type { EmbeddingProvider } from "./embeddings/base.js";
 
 const program = new Command();
@@ -16,27 +17,57 @@ program
   .version("0.1.0");
 
 program
+  .command("init")
+  .description("Initialize default configuration file")
+  .action(async () => {
+    await createDefaultConfig();
+  });
+
+program
   .command("index")
   .description("Index documents from a directory")
   .argument("<directory>", "Directory containing documents to index")
-  .option("-p, --provider <provider>", "Embedding provider (openai, voyageai, ollama)", "ollama")
+  .option("-p, --provider <provider>", "Embedding provider (openai, voyageai, ollama)")
   .option("-k, --api-key <key>", "API key for the embedding provider")
-  .option("-m, --model <model>", "Model name", "nomic-embed-text")
-  .option("-u, --base-url <url>", "Base URL (for Ollama)", "http://localhost:11434")
+  .option("-m, --model <model>", "Model name")
+  .option("-u, --base-url <url>", "Base URL (for Ollama)")
   .option("-o, --output <path>", "Output database path", "index.rag")
+  .option("--chunk-size <number>", "Chunk size in characters")
+  .option("--chunk-overlap <number>", "Chunk overlap in characters")
   .action(async (directory, options) => {
-    const apiKey = options.apiKey || 
-      (options.provider === "openai" ? process.env.OPENAI_API_KEY : undefined) ||
-      (options.provider === "voyageai" ? process.env.VOYAGE_API_KEY : undefined);
+    const config = await loadConfig();
     
-    const provider = createEmbeddingProvider(
-      options.provider,
-      apiKey,
-      options.model,
-      options.baseUrl
+    // Merge config with CLI options (CLI takes precedence)
+    const provider = (options.provider || config.provider || "ollama") as "openai" | "voyageai" | "ollama";
+    const model = options.model || config.model || "nomic-embed-text";
+    const baseUrl = options.baseUrl || config.baseUrl || "http://localhost:11434";
+    
+    // Get API key from CLI, config, or environment
+    let apiKey = options.apiKey;
+    if (!apiKey) {
+      if (provider === "openai") {
+        apiKey = config.apiKey || process.env.OPENAI_API_KEY;
+      } else if (provider === "voyageai") {
+        apiKey = config.apiKey || process.env.VOYAGE_API_KEY;
+      }
+    }
+    
+    // Chunking options
+    const chunkSize = options.chunkSize 
+      ? parseInt(options.chunkSize) 
+      : (config.chunking?.chunkSize || 1000);
+    const chunkOverlap = options.chunkOverlap 
+      ? parseInt(options.chunkOverlap) 
+      : (config.chunking?.chunkOverlap || 200);
+    
+    const embeddingProvider = createEmbeddingProvider(provider, apiKey, model, baseUrl);
+    
+    await indexDirectory(
+      directory, 
+      options.output, 
+      embeddingProvider,
+      { chunkSize, chunkOverlap }
     );
-    
-    await indexDirectory(directory, options.output, provider);
   });
 
 program
@@ -44,27 +75,35 @@ program
   .description("Query the indexed database")
   .argument("<database>", "Path to the .rag database file")
   .argument("<query>", "Query string")
-  .option("-p, --provider <provider>", "Embedding provider (openai, voyageai, ollama)", "ollama")
+  .option("-p, --provider <provider>", "Embedding provider (openai, voyageai, ollama)")
   .option("-k, --api-key <key>", "API key for the embedding provider")
-  .option("-m, --model <model>", "Model name", "nomic-embed-text")
-  .option("-u, --base-url <url>", "Base URL (for Ollama)", "http://localhost:11434")
+  .option("-m, --model <model>", "Model name")
+  .option("-u, --base-url <url>", "Base URL (for Ollama)")
   .option("-t, --top-k <number>", "Number of results to return", "5")
   .action(async (database, query, options) => {
-    const apiKey = options.apiKey || 
-      (options.provider === "openai" ? process.env.OPENAI_API_KEY : undefined) ||
-      (options.provider === "voyageai" ? process.env.VOYAGE_API_KEY : undefined);
+    const config = await loadConfig();
     
-    const provider = createEmbeddingProvider(
-      options.provider,
-      apiKey,
-      options.model,
-      options.baseUrl
-    );
+    // Merge config with CLI options (CLI takes precedence)
+    const provider = (options.provider || config.provider || "ollama") as "openai" | "voyageai" | "ollama";
+    const model = options.model || config.model || "nomic-embed-text";
+    const baseUrl = options.baseUrl || config.baseUrl || "http://localhost:11434";
+    
+    // Get API key from CLI, config, or environment
+    let apiKey = options.apiKey;
+    if (!apiKey) {
+      if (provider === "openai") {
+        apiKey = config.apiKey || process.env.OPENAI_API_KEY;
+      } else if (provider === "voyageai") {
+        apiKey = config.apiKey || process.env.VOYAGE_API_KEY;
+      }
+    }
+    
+    const embeddingProvider = createEmbeddingProvider(provider, apiKey, model, baseUrl);
     
     const results = await queryDatabase(
       database,
       query,
-      provider,
+      embeddingProvider,
       parseInt(options.topK || "5")
     );
     
@@ -75,22 +114,30 @@ program
   .command("interactive")
   .description("Start an interactive query session")
   .argument("<database>", "Path to the .rag database file")
-  .option("-p, --provider <provider>", "Embedding provider (openai, voyageai, ollama)", "ollama")
+  .option("-p, --provider <provider>", "Embedding provider (openai, voyageai, ollama)")
   .option("-k, --api-key <key>", "API key for the embedding provider")
-  .option("-m, --model <model>", "Model name", "nomic-embed-text")
-  .option("-u, --base-url <url>", "Base URL (for Ollama)", "http://localhost:11434")
+  .option("-m, --model <model>", "Model name")
+  .option("-u, --base-url <url>", "Base URL (for Ollama)")
   .option("-t, --top-k <number>", "Number of results to return", "5")
   .action(async (database, options) => {
-    const apiKey = options.apiKey || 
-      (options.provider === "openai" ? process.env.OPENAI_API_KEY : undefined) ||
-      (options.provider === "voyageai" ? process.env.VOYAGE_API_KEY : undefined);
+    const config = await loadConfig();
     
-    const provider = createEmbeddingProvider(
-      options.provider,
-      apiKey,
-      options.model,
-      options.baseUrl
-    );
+    // Merge config with CLI options (CLI takes precedence)
+    const provider = (options.provider || config.provider || "ollama") as "openai" | "voyageai" | "ollama";
+    const model = options.model || config.model || "nomic-embed-text";
+    const baseUrl = options.baseUrl || config.baseUrl || "http://localhost:11434";
+    
+    // Get API key from CLI, config, or environment
+    let apiKey = options.apiKey;
+    if (!apiKey) {
+      if (provider === "openai") {
+        apiKey = config.apiKey || process.env.OPENAI_API_KEY;
+      } else if (provider === "voyageai") {
+        apiKey = config.apiKey || process.env.VOYAGE_API_KEY;
+      }
+    }
+    
+    const embeddingProvider = createEmbeddingProvider(provider, apiKey, model, baseUrl);
     
     console.log("Interactive mode. Type 'exit' or 'quit' to exit.\n");
     
@@ -113,7 +160,7 @@ program
             const results = await queryDatabase(
               database,
               query,
-              provider,
+              embeddingProvider,
               parseInt(options.topK || "5")
             );
             console.log("\n" + formatResults(results) + "\n");
@@ -138,13 +185,13 @@ function createEmbeddingProvider(
   switch (provider.toLowerCase()) {
     case "openai":
       if (!apiKey) {
-        throw new Error("API key required for OpenAI provider. Use --api-key or set OPENAI_API_KEY environment variable.");
+        throw new Error("API key required for OpenAI provider. Use --api-key, set in config, or set OPENAI_API_KEY environment variable.");
       }
       return new OpenAIEmbeddingProvider(apiKey, model);
     
     case "voyageai":
       if (!apiKey) {
-        throw new Error("API key required for VoyageAI provider. Use --api-key or set VOYAGE_API_KEY environment variable.");
+        throw new Error("API key required for VoyageAI provider. Use --api-key, set in config, or set VOYAGE_API_KEY environment variable.");
       }
       return new VoyageAIEmbeddingProvider(apiKey, model);
     

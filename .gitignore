@@ -5,3 +5,8 @@ dist/
 .DS_Store
 .env
 *.log
+
+# Test artifacts
+test.rag
+test-*.rag
+*.test.rag

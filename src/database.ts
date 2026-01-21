@@ -6,7 +6,8 @@ export interface IndexedChunk {
   id: string;
   text: string;
   filePath: string;
-  chunkIndex: number;
+  startLine: number;
+  endLine: number;
   startChar: number;
   endChar: number;
   vector: number[];
@@ -58,12 +59,13 @@ export class RAGDatabase {
       
       for (let j = 0; j < batch.length; j++) {
         const chunk = batch[j];
-        const id = `${chunk.filePath}:${chunk.chunkIndex}`;
+        const id = `${chunk.filePath}:${chunk.startLine}:${chunk.endLine}`;
         indexedChunks.push({
           id,
           text: chunk.text,
           filePath: chunk.filePath,
-          chunkIndex: chunk.chunkIndex,
+          startLine: chunk.startLine,
+          endLine: chunk.endLine,
           startChar: chunk.startChar,
           endChar: chunk.endChar,
           vector: embeddings[j],
@@ -100,7 +102,8 @@ export class RAGDatabase {
       id: result.id,
       text: result.text,
       filePath: result.filePath,
-      chunkIndex: result.chunkIndex,
+      startLine: result.startLine,
+      endLine: result.endLine,
       startChar: result.startChar,
       endChar: result.endChar,
       vector: result.vector,

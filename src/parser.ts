@@ -4,23 +4,30 @@ import { join, extname } from "path";
 export interface DocumentChunk {
   text: string;
   filePath: string;
-  chunkIndex: number;
+  startLine: number;
+  endLine: number;
   startChar: number;
   endChar: number;
 }
 
-const SUPPORTED_EXTENSIONS = [".txt", ".md", ".markdown"];
-const CHUNK_SIZE = 1000; // characters
-const CHUNK_OVERLAP = 200; // characters
+export interface ChunkingOptions {
+  chunkSize: number;
+  chunkOverlap: number;
+}
 
-export async function parseDirectory(dirPath: string): Promise<DocumentChunk[]> {
+const SUPPORTED_EXTENSIONS = [".txt", ".md", ".markdown"];
+
+export async function parseDirectory(
+  dirPath: string,
+  options: ChunkingOptions
+): Promise<DocumentChunk[]> {
   const chunks: DocumentChunk[] = [];
   const files = await getAllFiles(dirPath);
   
   for (const file of files) {
     const ext = extname(file).toLowerCase();
     if (SUPPORTED_EXTENSIONS.includes(ext)) {
-      const fileChunks = await parseFile(file);
+      const fileChunks = await parseFile(file, options);
       chunks.push(...fileChunks);
     }
   }
@@ -45,19 +52,53 @@ async function getAllFiles(dirPath: string): Promise<string[]> {
   return files;
 }
 
-async function parseFile(filePath: string): Promise<DocumentChunk[]> {
+async function parseFile(
+  filePath: string,
+  options: ChunkingOptions
+): Promise<DocumentChunk[]> {
   const content = await readFile(filePath, "utf-8");
-  return chunkText(content, filePath);
+  return chunkText(content, filePath, options);
 }
 
-function chunkText(text: string, filePath: string): DocumentChunk[] {
+function chunkText(
+  text: string,
+  filePath: string,
+  options: ChunkingOptions
+): DocumentChunk[] {
   const chunks: DocumentChunk[] = [];
+  const { chunkSize, chunkOverlap } = options;
+  
+  // Pre-compute line numbers for each character position
+  const lines = text.split("\n");
+  const lineStarts: number[] = [0];
+  let currentPos = 0;
+  for (const line of lines) {
+    currentPos += line.length + 1; // +1 for newline
+    lineStarts.push(currentPos);
+  }
+  
+  function getLineNumber(charPos: number): number {
+    // Binary search for the line containing this character
+    let left = 0;
+    let right = lineStarts.length - 1;
+    while (left < right) {
+      const mid = Math.floor((left + right) / 2);
+      if (lineStarts[mid] <= charPos && charPos < lineStarts[mid + 1]) {
+        return mid;
+      } else if (charPos < lineStarts[mid]) {
+        right = mid;
+      } else {
+        left = mid + 1;
+      }
+    }
+    return Math.max(0, lineStarts.length - 2); // Return last line if beyond
+  }
+  
   let startChar = 0;
-  let chunkIndex = 0;
   
   while (startChar < text.length) {
-    const endChar = Math.min(startChar + CHUNK_SIZE, text.length);
-    const chunkText = text.slice(startChar, endChar);
+    const endChar = Math.min(startChar + chunkSize, text.length);
+    let chunkText = text.slice(startChar, endChar);
     
     // Try to break at sentence boundaries
     let actualEnd = endChar;
@@ -68,20 +109,25 @@ function chunkText(text: string, filePath: string): DocumentChunk[] {
       const sentenceEnd = searchText.search(/[.!?]\s+/);
       if (sentenceEnd !== -1) {
         actualEnd = searchStart + sentenceEnd + 1;
+        chunkText = text.slice(startChar, actualEnd);
       }
     }
     
+    // Calculate line numbers (1-indexed for user display)
+    const startLine = getLineNumber(startChar) + 1;
+    const endLine = getLineNumber(actualEnd - 1) + 1;
+    
     chunks.push({
-      text: text.slice(startChar, actualEnd).trim(),
+      text: chunkText.trim(),
       filePath,
-      chunkIndex,
+      startLine,
+      endLine,
       startChar,
       endChar: actualEnd,
     });
     
     // Move start forward with overlap
-    startChar = Math.max(startChar + 1, actualEnd - CHUNK_OVERLAP);
-    chunkIndex++;
+    startChar = Math.max(startChar + 1, actualEnd - chunkOverlap);
   }
   
   return chunks;

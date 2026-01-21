@@ -1,0 +1,71 @@
+import { readFile, mkdir, writeFile } from "fs/promises";
+import { join } from "path";
+import { homedir } from "os";
+import yaml from "js-yaml";
+
+export interface QuickRAGConfig {
+  provider?: "openai" | "voyageai" | "ollama";
+  apiKey?: string;
+  model?: string;
+  baseUrl?: string;
+  chunking?: {
+    chunkSize?: number;
+    chunkOverlap?: number;
+  };
+}
+
+const CONFIG_DIR = join(homedir(), ".config", "quickrag");
+const CONFIG_FILE = join(CONFIG_DIR, "config.yaml");
+
+const DEFAULT_CONFIG: QuickRAGConfig = {
+  provider: "ollama",
+  model: "nomic-embed-text",
+  baseUrl: "http://localhost:11434",
+  chunking: {
+    chunkSize: 1000,
+    chunkOverlap: 200,
+  },
+};
+
+export async function loadConfig(): Promise<QuickRAGConfig> {
+  try {
+    const content = await readFile(CONFIG_FILE, "utf-8");
+    const config = yaml.load(content) as QuickRAGConfig;
+    // Merge with defaults to ensure all fields are present
+    return { ...DEFAULT_CONFIG, ...config };
+  } catch (error: any) {
+    if (error.code === "ENOENT") {
+      // Config file doesn't exist, return defaults
+      return DEFAULT_CONFIG;
+    }
+    throw error;
+  }
+}
+
+export async function saveConfig(config: QuickRAGConfig): Promise<void> {
+  // Ensure config directory exists
+  await mkdir(CONFIG_DIR, { recursive: true });
+  
+  // Merge with defaults
+  const fullConfig = { ...DEFAULT_CONFIG, ...config };
+  
+  // Write to file
+  const yamlContent = yaml.dump(fullConfig, {
+    indent: 2,
+    lineWidth: -1,
+  });
+  
+  await writeFile(CONFIG_FILE, yamlContent, "utf-8");
+}
+
+export async function createDefaultConfig(): Promise<void> {
+  await saveConfig(DEFAULT_CONFIG);
+  console.log(`Created default config at: ${CONFIG_FILE}`);
+  console.log("\nYou can edit this file to customize your settings:");
+  console.log("  - provider: openai, voyageai, or ollama");
+  console.log("  - apiKey: Your API key (or set via environment variables)");
+  console.log("  - model: Model name for the embedding provider");
+  console.log("  - baseUrl: Base URL for Ollama (default: http://localhost:11434)");
+  console.log("  - chunking.chunkSize: Size of text chunks in characters (default: 1000)");
+  console.log("  - chunking.chunkOverlap: Overlap between chunks in characters (default: 200)");
+}

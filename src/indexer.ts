@@ -1,14 +1,15 @@
-import { parseDirectory } from "./parser.js";
+import { parseDirectory, type ChunkingOptions } from "./parser.js";
 import { RAGDatabase } from "./database.js";
 import type { EmbeddingProvider } from "./embeddings/base.js";
 
 export async function indexDirectory(
   dirPath: string,
   dbPath: string,
-  embeddingProvider: EmbeddingProvider
+  embeddingProvider: EmbeddingProvider,
+  chunkingOptions: ChunkingOptions
 ): Promise<void> {
   console.log(`Parsing documents from ${dirPath}...`);
-  const chunks = await parseDirectory(dirPath);
+  const chunks = await parseDirectory(dirPath, chunkingOptions);
   
   if (chunks.length === 0) {
     console.log("No documents found to index.");
