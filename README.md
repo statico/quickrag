@@ -196,48 +196,29 @@ The chunking algorithm can be tuned via configuration:
 
 ## Installation
 
-### Homebrew (Recommended)
-
-Install via Homebrew tap:
-
-```sh
-# Add the tap
-brew tap statico/quickrag
-
-# Install quickrag
-brew install quickrag
-```
-
-Or install directly from the formula:
-
-```sh
-brew install statico/quickrag/quickrag
-```
-
-**Setting up a Homebrew Tap:**
-
-See [HOMEBREW.md](HOMEBREW.md) for detailed instructions on creating and maintaining a Homebrew tap.
-
-Quick setup:
-1. Create a new repository named `homebrew-quickrag` (or `homebrew-statico`)
-2. Copy the formula file from `Formula/quickrag.rb` to your tap repository
-3. Update the `homepage` and `url` fields in the formula to point to your repository
-4. Users can then install with:
-   ```sh
-   brew tap statico/quickrag
-   brew install quickrag
-   ```
-
 ### Download Binary
 
-Grab the latest release for your platform from the [Releases page](../../releases).
+Install the latest release:
 
 ```sh
-chmod +x quickrag-darwin-arm64
-./quickrag-darwin-arm64 --help
+# macOS (Apple Silicon)
+curl -L https://github.com/statico/quickrag/releases/latest/download/quickrag-darwin-arm64 -o /usr/local/bin/quickrag
+chmod +x /usr/local/bin/quickrag
+
+# macOS (Intel)
+curl -L https://github.com/statico/quickrag/releases/latest/download/quickrag-darwin-x64 -o /usr/local/bin/quickrag
+chmod +x /usr/local/bin/quickrag
+
+# Linux (ARM64)
+curl -L https://github.com/statico/quickrag/releases/latest/download/quickrag-linux-arm64 -o /usr/local/bin/quickrag
+chmod +x /usr/local/bin/quickrag
+
+# Linux (x64)
+curl -L https://github.com/statico/quickrag/releases/latest/download/quickrag-linux-x64 -o /usr/local/bin/quickrag
+chmod +x /usr/local/bin/quickrag
 ```
 
-Note: macOS binaries are not codesigned. You may need to right-click and select "Open" or run `xattr -d com.apple.quarantine <binary>` to bypass Gatekeeper.
+Note: macOS binaries are not codesigned. You may need to right-click and select "Open" or run `xattr -d com.apple.quarantine /usr/local/bin/quickrag` to bypass Gatekeeper.
 
 ### Build from Source
 
