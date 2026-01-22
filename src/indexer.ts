@@ -57,12 +57,16 @@ export async function indexDirectory(
   console.log(`Found ${filesToIndex.length} file(s) to index (${files.length - filesToIndex.length} already indexed)`);
   
   let totalChunks = 0;
+  let totalNewChunks = 0;
   for (const file of filesToIndex) {
     try {
       console.log(`Indexing ${file.path}...`);
       
-      await db.removeFileChunks(file.path);
-      await db.removeFileFromIndex(file.path);
+      // Don't remove file chunks upfront - let deduplication handle it
+      // Only remove from file index if we're re-indexing
+      if (!clear) {
+        await db.removeFileFromIndex(file.path);
+      }
       
       let content: string;
       try {
@@ -77,10 +81,29 @@ export async function indexDirectory(
       const fileChunks = chunkText(content, file.path, chunkingOptions);
       
       if (fileChunks.length > 0) {
+        // Get count before indexing to see how many are new
+        let statsBefore = { count: 0 };
+        try {
+          statsBefore = await db.getStats();
+        } catch {
+          // Table might not exist yet, that's okay
+        }
+        
         await db.indexChunks(fileChunks, embeddingProvider);
+        
+        let statsAfter = { count: 0 };
+        try {
+          statsAfter = await db.getStats();
+        } catch {
+          // Table might not exist, that's okay
+        }
+        
+        const newChunks = statsAfter.count - statsBefore.count;
+        
         await db.markFileIndexed(file.path, file.mtime);
         totalChunks += fileChunks.length;
-        console.log(`  Indexed ${fileChunks.length} chunks from ${file.path}`);
+        totalNewChunks += newChunks;
+        console.log(`  Processed ${fileChunks.length} chunks from ${file.path} (${newChunks} new, ${fileChunks.length - newChunks} already existed)`);
       } else {
         console.log(`  No chunks generated from ${file.path} (file may be empty)`);
       }
@@ -89,6 +112,11 @@ export async function indexDirectory(
     }
   }
   
-  const stats = await db.getStats();
-  console.log(`\nIndexing complete! Indexed ${totalChunks} new chunks. Total chunks in database: ${stats.count}`);
+  let stats = { count: 0 };
+  try {
+    stats = await db.getStats();
+  } catch {
+    // Table might not exist, that's okay
+  }
+  console.log(`\nIndexing complete! Processed ${totalChunks} chunks, added ${totalNewChunks} new chunks. Total chunks in database: ${stats.count}`);
 }

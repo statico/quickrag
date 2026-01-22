@@ -1,4 +1,5 @@
 import * as lancedb from "@lancedb/lancedb";
+import { createHash } from "crypto";
 import type { DocumentChunk } from "./parser.js";
 import type { EmbeddingProvider } from "./embeddings/base.js";
 
@@ -11,6 +12,7 @@ export interface IndexedChunk {
   startChar: number;
   endChar: number;
   vector: number[];
+  hash: string;
 }
 
 export class RAGDatabase {
@@ -27,6 +29,31 @@ export class RAGDatabase {
 
   getDimensions(): number {
     return this.dimensions;
+  }
+
+  private computeChunkHash(text: string): string {
+    return createHash("sha256").update(text).digest("hex");
+  }
+
+  async getExistingChunkHashes(): Promise<Set<string>> {
+    if (!this.table) {
+      return new Set();
+    }
+    
+    try {
+      const allChunks = await this.table.query().toArray();
+      const hashes = new Set<string>();
+      for (const row of allChunks) {
+        const record = row as Record<string, unknown>;
+        const hash = record.hash;
+        if (hash && typeof hash === "string") {
+          hashes.add(hash);
+        }
+      }
+      return hashes;
+    } catch {
+      return new Set();
+    }
   }
 
   async initialize(): Promise<void> {
@@ -127,7 +154,26 @@ export class RAGDatabase {
       return;
     }
 
-    console.log(`Indexing ${chunks.length} chunks...`);
+    // Compute hashes for all chunks and check which ones already exist
+    const existingHashes = await this.getExistingChunkHashes();
+    const chunksToIndex: Array<DocumentChunk & { hash: string }> = [];
+    let skippedCount = 0;
+
+    for (const chunk of chunks) {
+      const hash = this.computeChunkHash(chunk.text);
+      if (!existingHashes.has(hash)) {
+        chunksToIndex.push({ ...chunk, hash });
+      } else {
+        skippedCount++;
+      }
+    }
+
+    if (chunksToIndex.length === 0) {
+      console.log(`All ${chunks.length} chunks already exist in database (skipped).`);
+      return;
+    }
+
+    console.log(`Indexing ${chunksToIndex.length} new chunks (${skippedCount} already exist)...`);
     
     // Generate embeddings in batches
     // Use character-count-based batching to respect API limits
@@ -139,19 +185,19 @@ export class RAGDatabase {
     const indexedChunks: IndexedChunk[] = [];
     
     // Calculate total batches for accurate progress reporting
-    const totalChars = chunks.reduce((sum, chunk) => sum + chunk.text.length, 0);
+    const totalChars = chunksToIndex.reduce((sum, chunk) => sum + chunk.text.length, 0);
     const estimatedBatchesByChars = Math.ceil(totalChars / maxCharsPerBatch);
-    const estimatedBatchesByCount = Math.ceil(chunks.length / maxTextsPerBatch);
+    const estimatedBatchesByCount = Math.ceil(chunksToIndex.length / maxTextsPerBatch);
     let totalBatches = Math.max(estimatedBatchesByChars, estimatedBatchesByCount, 1);
     
     let batchNum = 0;
     let i = 0;
-    while (i < chunks.length) {
-      const batch: typeof chunks = [];
+    while (i < chunksToIndex.length) {
+      const batch: typeof chunksToIndex = [];
       let batchCharCount = 0;
       
-      while (i < chunks.length && batch.length < maxTextsPerBatch) {
-        const chunk = chunks[i];
+      while (i < chunksToIndex.length && batch.length < maxTextsPerBatch) {
+        const chunk = chunksToIndex[i];
         const chunkChars = chunk.text.length;
         
         if (batch.length === 0 || (batchCharCount + chunkChars <= maxCharsPerBatch)) {
@@ -164,7 +210,7 @@ export class RAGDatabase {
       }
       
       if (batch.length === 0) {
-        throw new Error(`Chunk at index ${i} is too large (${chunks[i].text.length} chars) for batch limit (${maxCharsPerBatch} chars)`);
+        throw new Error(`Chunk at index ${i} is too large (${chunksToIndex[i].text.length} chars) for batch limit (${maxCharsPerBatch} chars)`);
       }
       
       const texts = batch.map((chunk) => chunk.text);
@@ -187,6 +233,7 @@ export class RAGDatabase {
           startChar: chunk.startChar,
           endChar: chunk.endChar,
           vector: embeddings[j],
+          hash: chunk.hash,
         });
       }
     }
@@ -204,6 +251,7 @@ export class RAGDatabase {
         startChar: chunk.startChar,
         endChar: chunk.endChar,
         vector: chunk.vector,
+        hash: chunk.hash,
       }));
       this.table = await this.db.createTable("documents", tableData);
     } else {
@@ -217,11 +265,12 @@ export class RAGDatabase {
         startChar: chunk.startChar,
         endChar: chunk.endChar,
         vector: chunk.vector,
+        hash: chunk.hash,
       }));
       await this.table.add(tableData);
     }
     
-    console.log(`Successfully indexed ${indexedChunks.length} chunks.`);
+    console.log(`Successfully indexed ${indexedChunks.length} new chunks.`);
   }
 
   async search(
@@ -254,6 +303,7 @@ export class RAGDatabase {
       startChar: Number(result.startChar ?? 0),
       endChar: Number(result.endChar ?? 0),
       vector: Array.isArray(result.vector) ? result.vector as number[] : [],
+      hash: String(result.hash ?? ""),
     }));
   }
 
