@@ -202,36 +202,39 @@ export class RAGDatabase {
 
   async indexChunks(
     chunks: DocumentChunk[],
-    embeddingProvider: EmbeddingProvider
-  ): Promise<void> {
+    embeddingProvider: EmbeddingProvider,
+    existingHashes?: Set<string>
+  ): Promise<{ indexed: number; skipped: number }> {
     if (!this.db) {
       throw new Error("Database not initialized. Call initialize() first.");
     }
     if (chunks.length === 0) {
       logger.warn("No chunks to index.");
-      return;
+      return { indexed: 0, skipped: 0 };
     }
 
     // Compute hashes for all chunks and check which ones already exist
-    const existingHashes = await this.getExistingChunkHashes();
+    const hashes = existingHashes ?? await this.getExistingChunkHashes();
     const chunksToIndex: Array<DocumentChunk & { hash: string }> = [];
     let skippedCount = 0;
 
     for (const chunk of chunks) {
       const hash = this.computeChunkHash(chunk.text);
-      if (!existingHashes.has(hash)) {
+      if (!hashes.has(hash)) {
         chunksToIndex.push({ ...chunk, hash });
+        hashes.add(hash);
       } else {
         skippedCount++;
       }
     }
 
     if (chunksToIndex.length === 0) {
-      logger.info(`All ${chunks.length} chunks already exist in database (skipped).`);
-      return;
+      return { indexed: 0, skipped: skippedCount };
     }
-
-    logger.info(`Indexing ${chunksToIndex.length} new chunks (${skippedCount} already exist)...`);
+    
+    if (chunksToIndex.length > 100) {
+      logger.info(`Indexing ${chunksToIndex.length} new chunks (${skippedCount} already exist)...`);
+    }
     
     // Generate embeddings in batches with improved sizing
     // Token-aware batching: estimate tokens instead of just characters
@@ -376,7 +379,7 @@ export class RAGDatabase {
       dbSpinner.succeed("Inserted into database");
     }
     
-    logger.success(`Successfully indexed ${indexedChunks.length} new chunks`);
+    return { indexed: indexedChunks.length, skipped: skippedCount };
   }
 
   async search(

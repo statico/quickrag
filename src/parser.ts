@@ -53,7 +53,7 @@ export async function parseDirectory(
   return { chunks, files };
 }
 
-async function getAllFiles(dirPath: string): Promise<string[]> {
+export async function getAllFiles(dirPath: string): Promise<string[]> {
   const files: string[] = [];
   const entries = await readdir(dirPath, { withFileTypes: true });
   
@@ -64,6 +64,25 @@ async function getAllFiles(dirPath: string): Promise<string[]> {
       files.push(...subFiles);
     } else if (entry.isFile()) {
       files.push(fullPath);
+    }
+  }
+  
+  return files;
+}
+
+export async function getFiles(dirPath: string): Promise<FileInfo[]> {
+  const files: FileInfo[] = [];
+  const filePaths = await getAllFiles(dirPath);
+  
+  for (const filePath of filePaths) {
+    const ext = extname(filePath).toLowerCase();
+    if (SUPPORTED_EXTENSIONS.includes(ext)) {
+      try {
+        const fileStat = await stat(filePath);
+        files.push({ path: filePath, mtime: fileStat.mtimeMs });
+      } catch (error) {
+        logger.warn(`Skipping file ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   }
   

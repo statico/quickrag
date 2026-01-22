@@ -1,4 +1,4 @@
-import { parseDirectory, type ChunkerOptions, type FileInfo, chunkText, type DocumentChunk } from "./parser.js";
+import { type ChunkerOptions, type FileInfo, chunkText, getFiles } from "./parser.js";
 import { RAGDatabase } from "./database.js";
 import type { EmbeddingProvider } from "./embeddings/base.js";
 import type { QuickRAGConfig } from "./config.js";
@@ -18,22 +18,10 @@ export async function indexDirectory(
 ): Promise<void> {
   const chunkerType: ChunkerType = config?.chunking?.strategy || "recursive-token";
   logger.info(`Parsing documents from ${dirPath}... (using ${chunkerType} chunker)`);
-  const { chunks: allChunks, files } = await parseDirectory(dirPath, chunkingOptions, chunkerType);
-  
-  if (files.length === 0) {
-    logger.warn("No documents found to index.");
-    return;
-  }
   
   const spinner = ora("Detecting embedding dimensions...").start();
-  let dimensions: number;
-  if (allChunks.length > 0) {
-    const testEmbedding = await embeddingProvider.embed(allChunks[0].text);
-    dimensions = testEmbedding.length;
-  } else {
-    const testEmbedding = await embeddingProvider.embed("test");
-    dimensions = testEmbedding.length;
-  }
+  const testEmbedding = await embeddingProvider.embed("test");
+  const dimensions = testEmbedding.length;
   spinner.succeed(`Detected embedding dimensions: ${dimensions}`);
   
   const db = new RAGDatabase(dbPath, dimensions, config);
@@ -46,10 +34,17 @@ export async function indexDirectory(
     clearSpinner.succeed("Cleared existing index");
   }
   
+  const allFiles = await getFiles(dirPath);
+  
+  if (allFiles.length === 0) {
+    logger.warn("No documents found to index.");
+    return;
+  }
+  
   const indexedFiles = await db.getIndexedFiles();
   const filesToIndex: FileInfo[] = [];
   
-  for (const file of files) {
+  for (const file of allFiles) {
     if (clear || !indexedFiles.has(file.path) || !(await db.isFileIndexed(file.path, file.mtime))) {
       filesToIndex.push(file);
     }
@@ -62,12 +57,14 @@ export async function indexDirectory(
     return;
   }
   
-  logger.info(`Found ${filesToIndex.length} file(s) to index (${files.length - filesToIndex.length} already indexed)`);
+  logger.info(`Found ${filesToIndex.length} file(s) to index (${allFiles.length - filesToIndex.length} already indexed)`);
   
-  const allChunksToIndex: Array<{ chunk: DocumentChunk; filePath: string; mtime: number }> = [];
+  const existingHashes = await db.getExistingChunkHashes();
+  let totalIndexed = 0;
+  let totalSkipped = 0;
   
   const fileProgressBar = new cliProgress.SingleBar({
-    format: "Collecting chunks |{bar}| {percentage}% | {value}/{total} files | {file}",
+    format: "Processing files |{bar}| {percentage}% | {value}/{total} files | {file}",
     barCompleteChar: "\u2588",
     barIncompleteChar: "\u2591",
     hideCursor: true,
@@ -75,12 +72,15 @@ export async function indexDirectory(
   
   fileProgressBar.start(filesToIndex.length, 0, { file: "" });
   
+  const chunker = createChunker(chunkerType);
+  
   for (let i = 0; i < filesToIndex.length; i++) {
     const file = filesToIndex[i];
     fileProgressBar.update(i, { file: file.path });
     
     try {
       if (!clear) {
+        await db.removeFileChunks(file.path);
         await db.removeFileFromIndex(file.path);
       }
       
@@ -94,56 +94,22 @@ export async function indexDirectory(
         content = decoder.decode(buffer);
       }
       
-      const chunker = createChunker(chunkerType);
       const fileChunks = chunkText(content, file.path, chunkingOptions, chunker);
       
-      for (const chunk of fileChunks) {
-        allChunksToIndex.push({ chunk, filePath: file.path, mtime: file.mtime });
+      if (fileChunks.length > 0) {
+        const result = await db.indexChunks(fileChunks, embeddingProvider, existingHashes);
+        totalIndexed += result.indexed;
+        totalSkipped += result.skipped;
       }
+      
+      await db.markFileIndexed(file.path, file.mtime);
     } catch (error) {
-      logger.error(`Error reading ${file.path}: ${error instanceof Error ? error.message : String(error)}`);
+      logger.error(`Error processing ${file.path}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   
   fileProgressBar.update(filesToIndex.length, { file: "Complete" });
   fileProgressBar.stop();
-  
-  if (allChunksToIndex.length === 0) {
-    logger.warn("No chunks to index.");
-    return;
-  }
-  
-  logger.info(`Collected ${allChunksToIndex.length} chunks across ${filesToIndex.length} files`);
-  
-  let statsBefore = { count: 0 };
-  try {
-    statsBefore = await db.getStats();
-  } catch {
-    // Table might not exist yet, that's okay
-  }
-  
-  const chunksToIndex = allChunksToIndex.map(item => item.chunk);
-  await db.indexChunks(chunksToIndex, embeddingProvider);
-  
-  let statsAfter = { count: 0 };
-  try {
-    statsAfter = await db.getStats();
-  } catch {
-    // Table might not exist, that's okay
-  }
-  
-  const totalNewChunks = statsAfter.count - statsBefore.count;
-  
-  for (const file of filesToIndex) {
-    try {
-      await db.markFileIndexed(file.path, file.mtime);
-    } catch (error) {
-      logger.warn(`Could not mark ${file.path} as indexed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-  
-  const totalChunks = allChunksToIndex.length;
-  const skippedChunks = totalChunks - totalNewChunks;
   
   let stats = { count: 0 };
   try {
@@ -152,6 +118,6 @@ export async function indexDirectory(
     // Table might not exist, that's okay
   }
   
-  logger.success(`Indexing complete! Processed ${totalChunks} chunks across ${filesToIndex.length} files`);
-  logger.info(`Added ${totalNewChunks} new chunks (${skippedChunks} already existed). Total chunks in database: ${stats.count}`);
+  logger.success(`Indexing complete! Processed ${totalIndexed + totalSkipped} chunks across ${filesToIndex.length} files`);
+  logger.info(`Added ${totalIndexed} new chunks (${totalSkipped} already existed). Total chunks in database: ${stats.count}`);
 }

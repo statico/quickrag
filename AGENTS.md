@@ -1,5 +1,7 @@
 # QuickRAG 
 
+**Keep this file brief and concise. Remove redundant information and condense verbose sections.**
+
 ## Releasing
 1. Update version: `npm version <major|minor|patch> --no-git-tag-version`
 2. Commit and tag: `git add package.json && git commit -m "vX.Y.Z" && git tag vX.Y.Z`
