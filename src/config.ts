@@ -12,6 +12,12 @@ export interface QuickRAGConfig {
     chunkSize?: number;
     chunkOverlap?: number;
   };
+  batching?: {
+    maxTextsPerBatch?: number;
+    maxCharsPerBatch?: number;
+    maxTokensPerBatch?: number;
+    maxConcurrentEmbeddings?: number;
+  };
 }
 
 const CONFIG_DIR = join(homedir(), ".config", "quickrag");
@@ -24,6 +30,12 @@ const DEFAULT_CONFIG: QuickRAGConfig = {
   chunking: {
     chunkSize: 1000,
     chunkOverlap: 200,
+  },
+  batching: {
+    maxTextsPerBatch: 64,
+    maxCharsPerBatch: 150000,
+    maxTokensPerBatch: 20000,
+    maxConcurrentEmbeddings: 4,
   },
 };
 
@@ -68,4 +80,8 @@ export async function createDefaultConfig(): Promise<void> {
   console.log("  - baseUrl: Base URL for Ollama (default: http://localhost:11434)");
   console.log("  - chunking.chunkSize: Size of text chunks in characters (default: 1000)");
   console.log("  - chunking.chunkOverlap: Overlap between chunks in characters (default: 200)");
+  console.log("  - batching.maxTextsPerBatch: Maximum texts per embedding batch (default: 64)");
+  console.log("  - batching.maxCharsPerBatch: Maximum characters per batch (default: 150000)");
+  console.log("  - batching.maxTokensPerBatch: Maximum tokens per batch (default: 20000)");
+  console.log("  - batching.maxConcurrentEmbeddings: Max concurrent embedding requests (default: 4)");
 }

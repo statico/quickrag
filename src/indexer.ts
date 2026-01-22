@@ -1,6 +1,7 @@
 import { parseDirectory, type ChunkingOptions, type FileInfo, chunkText } from "./parser.js";
 import { RAGDatabase } from "./database.js";
 import type { EmbeddingProvider } from "./embeddings/base.js";
+import type { QuickRAGConfig } from "./config.js";
 import { readFile } from "fs/promises";
 
 export async function indexDirectory(
@@ -8,7 +9,8 @@ export async function indexDirectory(
   dbPath: string,
   embeddingProvider: EmbeddingProvider,
   chunkingOptions: ChunkingOptions,
-  clear: boolean = false
+  clear: boolean = false,
+  config?: QuickRAGConfig
 ): Promise<void> {
   console.log(`Parsing documents from ${dirPath}...`);
   const { chunks: allChunks, files } = await parseDirectory(dirPath, chunkingOptions);
@@ -29,7 +31,7 @@ export async function indexDirectory(
   }
   console.log(`Detected embedding dimensions: ${dimensions}`);
   
-  const db = new RAGDatabase(dbPath, dimensions);
+  const db = new RAGDatabase(dbPath, dimensions, config);
   await db.initialize();
   
   if (clear) {

@@ -114,7 +114,8 @@ program
       options.output, 
       embeddingProvider,
       { chunkSize, chunkOverlap },
-      options.clear || false
+      options.clear || false,
+      config
     );
   });
 

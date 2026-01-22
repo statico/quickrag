@@ -53,17 +53,17 @@ This document summarizes the performance improvements implemented based on lesso
 
 ## Configuration
 
-All improvements can be configured via environment variables:
+All improvements can be configured via the config file (`~/.config/quickrag/config.yaml`):
 
-```bash
-# Batch size limits
-export QUICKRAG_MAX_TEXTS_PER_BATCH=64      # Default: 64
-export QUICKRAG_MAX_CHARS_PER_BATCH=150000  # Default: 150000
-export QUICKRAG_MAX_TOKENS_PER_BATCH=20000  # Default: 20000
-
-# Concurrency control
-export QUICKRAG_MAX_CONCURRENT_EMBEDDINGS=4  # Default: 4
+```yaml
+batching:
+  maxTextsPerBatch: 64        # Maximum texts per embedding batch (default: 64)
+  maxCharsPerBatch: 150000     # Maximum characters per batch (default: 150000)
+  maxTokensPerBatch: 20000     # Maximum tokens per batch (default: 20000)
+  maxConcurrentEmbeddings: 4   # Max concurrent embedding requests (default: 4)
 ```
+
+Run `quickrag init` to create a default config file with all options.
 
 ## Expected Performance Gains
 

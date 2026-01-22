@@ -2,6 +2,7 @@ import * as lancedb from "@lancedb/lancedb";
 import { createHash } from "crypto";
 import type { DocumentChunk } from "./parser.js";
 import type { EmbeddingProvider } from "./embeddings/base.js";
+import type { QuickRAGConfig } from "./config.js";
 import { ConcurrencyLimiter } from "./utils/concurrency.js";
 import { estimateTokens } from "./utils/tokens.js";
 
@@ -24,16 +25,26 @@ export class RAGDatabase {
   private dimensions: number;
   private db: Awaited<ReturnType<typeof lancedb.connect>> | null = null;
   private concurrencyLimiter: ConcurrencyLimiter;
+  private batchingConfig: Required<QuickRAGConfig["batching"]>;
 
-  constructor(dbPath: string, dimensions: number, maxConcurrentEmbeddings?: number) {
+  constructor(dbPath: string, dimensions: number, config?: QuickRAGConfig) {
     this.dbPath = dbPath;
     this.dimensions = dimensions;
-    // Allow configuration via environment variable (like YAMS)
-    const defaultConcurrency = maxConcurrentEmbeddings ?? 
-      (process.env.QUICKRAG_MAX_CONCURRENT_EMBEDDINGS 
-        ? parseInt(process.env.QUICKRAG_MAX_CONCURRENT_EMBEDDINGS, 10) 
-        : 4);
-    this.concurrencyLimiter = new ConcurrencyLimiter(defaultConcurrency);
+    
+    // Use config with defaults
+    const defaultBatching = {
+      maxTextsPerBatch: 64,
+      maxCharsPerBatch: 150000,
+      maxTokensPerBatch: 20000,
+      maxConcurrentEmbeddings: 4,
+    };
+    
+    this.batchingConfig = {
+      ...defaultBatching,
+      ...(config?.batching || {}),
+    };
+    
+    this.concurrencyLimiter = new ConcurrencyLimiter(this.batchingConfig.maxConcurrentEmbeddings);
   }
 
   getDimensions(): number {
@@ -217,18 +228,10 @@ export class RAGDatabase {
     
     // Generate embeddings in batches with improved sizing
     // Token-aware batching: estimate tokens instead of just characters
-    // Increased batch sizes: 32-64 texts, ~150K chars (conservative for API limits)
-    // Most models support 8K-32K tokens per request, we target ~20K tokens per batch
-    // Allow configuration via environment variables (like YAMS)
-    const maxTokensPerBatch = process.env.QUICKRAG_MAX_TOKENS_PER_BATCH 
-      ? parseInt(process.env.QUICKRAG_MAX_TOKENS_PER_BATCH, 10) 
-      : 20000;
-    const maxTextsPerBatch = process.env.QUICKRAG_MAX_TEXTS_PER_BATCH 
-      ? parseInt(process.env.QUICKRAG_MAX_TEXTS_PER_BATCH, 10) 
-      : 64;
-    const maxCharsPerBatch = process.env.QUICKRAG_MAX_CHARS_PER_BATCH 
-      ? parseInt(process.env.QUICKRAG_MAX_CHARS_PER_BATCH, 10) 
-      : 150000;
+    // Use configurable batch limits from config
+    const maxTokensPerBatch = this.batchingConfig.maxTokensPerBatch;
+    const maxTextsPerBatch = this.batchingConfig.maxTextsPerBatch;
+    const maxCharsPerBatch = this.batchingConfig.maxCharsPerBatch;
     const indexedChunks: IndexedChunk[] = [];
     
     // Calculate total batches for accurate progress reporting
