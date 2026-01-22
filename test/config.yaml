@@ -1,11 +1,3 @@
 provider: ollama
 model: nomic-embed-text
 baseUrl: http://localhost:11434
-chunking:
-  chunkSize: 1000
-  chunkOverlap: 200
-batching:
-  maxTextsPerBatch: 64
-  maxCharsPerBatch: 150000
-  maxTokensPerBatch: 20000
-  maxConcurrentEmbeddings: 4
