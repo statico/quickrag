@@ -39,9 +39,11 @@ const DEFAULT_CONFIG: QuickRAGConfig = {
   },
 };
 
-export async function loadConfig(): Promise<QuickRAGConfig> {
+export async function loadConfig(configPath?: string): Promise<QuickRAGConfig> {
+  const filePath = configPath || CONFIG_FILE;
+  
   try {
-    const content = await readFile(CONFIG_FILE, "utf-8");
+    const content = await readFile(filePath, "utf-8");
     const config = yaml.load(content) as QuickRAGConfig;
     // Merge with defaults to ensure all fields are present
     return { ...DEFAULT_CONFIG, ...config };

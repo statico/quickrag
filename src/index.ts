@@ -80,11 +80,12 @@ program
   .option("-m, --model <model>", "Model name")
   .option("-u, --base-url <url>", "Base URL (for Ollama)")
   .option("-o, --output <path>", "Output database path", "index.rag")
+  .option("--config <path>", "Path to config file (default: ~/.config/quickrag/config.yaml)")
   .option("--chunk-size <number>", "Chunk size in characters")
   .option("--chunk-overlap <number>", "Chunk overlap in characters")
   .option("--clear", "Clear existing index before indexing (default: skip already indexed files)")
   .action(async (directory, options) => {
-    const config = await loadConfig();
+    const config = await loadConfig(options.config);
     const embeddingOpts = await parseEmbeddingOptions(options, config);
     
     // Chunking options
@@ -128,9 +129,10 @@ program
   .option("-k, --api-key <key>", "API key for the embedding provider")
   .option("-m, --model <model>", "Model name")
   .option("-u, --base-url <url>", "Base URL (for Ollama)")
+  .option("--config <path>", "Path to config file (default: ~/.config/quickrag/config.yaml)")
   .option("-t, --top-k <number>", "Number of results to return", "5")
   .action(async (database, query, options) => {
-    const config = await loadConfig();
+    const config = await loadConfig(options.config);
     const embeddingOpts = await parseEmbeddingOptions(options, config);
     const topK = parseTopK(options, 5);
     
@@ -159,9 +161,10 @@ program
   .option("-k, --api-key <key>", "API key for the embedding provider")
   .option("-m, --model <model>", "Model name")
   .option("-u, --base-url <url>", "Base URL (for Ollama)")
+  .option("--config <path>", "Path to config file (default: ~/.config/quickrag/config.yaml)")
   .option("-t, --top-k <number>", "Number of results to return", "5")
   .action(async (database, options) => {
-    const config = await loadConfig();
+    const config = await loadConfig(options.config);
     const embeddingOpts = await parseEmbeddingOptions(options, config);
     const topK = parseTopK(options, 5);
     
