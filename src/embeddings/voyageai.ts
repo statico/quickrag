@@ -1,5 +1,6 @@
 import type { EmbeddingProvider } from "./base.js";
 import { logger } from "../utils/logger.js";
+import { fetchWithTimeout } from "../utils/timeout.js";
 
 function sanitizeUTF8(text: string): string {
   const encoder = new TextEncoder();
@@ -52,17 +53,21 @@ export class VoyageAIEmbeddingProvider implements EmbeddingProvider {
   }
 
   async embed(text: string): Promise<number[]> {
-    const response = await fetch(`${this.baseUrl}/embeddings`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
+    const response = await fetchWithTimeout(
+      `${this.baseUrl}/embeddings`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.model,
+          input: text,
+        }),
       },
-      body: JSON.stringify({
-        model: this.model,
-        input: text,
-      }),
-    });
+      300000
+    );
 
     if (!response.ok) {
       let errorMessage: string;
@@ -149,14 +154,18 @@ export class VoyageAIEmbeddingProvider implements EmbeddingProvider {
       throw new Error(`Failed to serialize request body: ${error instanceof Error ? error.message : String(error)}`);
     }
     
-    const response = await fetch(`${this.baseUrl}/embeddings`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        Authorization: `Bearer ${this.apiKey}`,
+    const response = await fetchWithTimeout(
+      `${this.baseUrl}/embeddings`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: requestBodyStr,
       },
-      body: requestBodyStr,
-    });
+      300000
+    );
 
     if (!response.ok) {
       let errorMessage: string;

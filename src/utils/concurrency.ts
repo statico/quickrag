@@ -4,6 +4,9 @@ export class ConcurrencyLimiter {
   private active: number = 0;
 
   constructor(maxConcurrent: number) {
+    if (maxConcurrent < 1) {
+      throw new Error("maxConcurrent must be at least 1");
+    }
     this.semaphore = maxConcurrent;
   }
 

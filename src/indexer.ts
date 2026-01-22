@@ -117,12 +117,24 @@ export async function indexDirectory(
                 content = decoder.decode(buffer);
               }
 
+              if (task) {
+                task.title = `Chunking ${file.path}...`;
+              }
               const fileChunks = chunkText(content, file.path, chunkingOptions, ctx.chunker);
+              
+              if (task && fileChunks.length > 0) {
+                task.title = `${file.path} (${fileChunks.length} chunks)`;
+              }
 
               if (fileChunks.length > 0) {
-                const result = await ctx.db.indexChunks(fileChunks, embeddingProvider, ctx.existingHashes, task);
-                ctx.totalIndexed += result.indexed;
-                ctx.totalSkipped += result.skipped;
+                try {
+                  const result = await ctx.db.indexChunks(fileChunks, embeddingProvider, ctx.existingHashes, task);
+                  ctx.totalIndexed += result.indexed;
+                  ctx.totalSkipped += result.skipped;
+                } catch (error) {
+                  logger.error(`Failed to index ${file.path}: ${error instanceof Error ? error.message : String(error)}`);
+                  throw error;
+                }
               }
 
               await ctx.db.markFileIndexed(file.path, file.mtime);

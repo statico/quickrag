@@ -59,6 +59,8 @@ export class RAGDatabase {
   }
 
   private computeChunkHash(text: string): string {
+    // Use a faster hash for deduplication - we don't need cryptographic security
+    // Just need to detect identical chunks
     return createHash("sha256").update(text).digest("hex");
   }
 
@@ -98,7 +100,7 @@ export class RAGDatabase {
     }
     
     try {
-      const allChunks = await this.table.query().toArray();
+      const allChunks = await this.table.query().select(["hash"]).toArray();
       const hashes = new Set<string>();
       for (const row of allChunks) {
         const record = row as Record<string, unknown>;
@@ -108,7 +110,8 @@ export class RAGDatabase {
         }
       }
       return hashes;
-    } catch {
+    } catch (error) {
+      logger.debug(`Failed to get existing chunk hashes: ${error instanceof Error ? error.message : String(error)}`);
       return new Set();
     }
   }
@@ -218,13 +221,24 @@ export class RAGDatabase {
     const chunksToIndex: Array<DocumentChunk & { hash: string }> = [];
     let skippedCount = 0;
 
-    for (const chunk of chunks) {
+    // Yield to event loop periodically to prevent blocking
+    const YIELD_INTERVAL = 50;
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
       const hash = this.computeChunkHash(chunk.text);
       if (!hashes.has(hash)) {
         chunksToIndex.push({ ...chunk, hash });
         hashes.add(hash);
       } else {
         skippedCount++;
+      }
+      
+      // Yield to event loop every YIELD_INTERVAL chunks to keep spinner alive
+      if (i > 0 && i % YIELD_INTERVAL === 0) {
+        await Promise.resolve();
+        if (task && chunks.length > 50) {
+          task.title = `${task.title.split('(')[0].trim()} (${i + 1}/${chunks.length} processed)`;
+        }
       }
     }
 
@@ -306,12 +320,14 @@ export class RAGDatabase {
       
       return this.concurrencyLimiter.execute(async () => {
         try {
+          logger.debug(`Starting batch ${batchInfo.batchNum}/${totalBatches} (${texts.length} texts)`);
           const embeddings = await this.embedWithRetry(texts, embeddingProvider, 3);
           batchResults.push({ batchInfo, embeddings });
           completedBatches++;
           if (task) {
             task.title = `Generating embeddings: ${completedBatches}/${totalBatches} batches`;
           }
+          logger.debug(`Completed batch ${batchInfo.batchNum}/${totalBatches}`);
         } catch (error) {
           logger.error(`Error in batch ${batchInfo.batchNum}: ${error instanceof Error ? error.message : String(error)}`);
           throw error;
@@ -319,12 +335,15 @@ export class RAGDatabase {
       });
     });
     
+    logger.debug(`Waiting for ${batchPromises.length} batch promises to complete...`);
     await Promise.all(batchPromises);
+    logger.debug(`All batches completed, sorting results...`);
     
     // Sort results by batch number to maintain order
     batchResults.sort((a, b) => a.batchInfo.batchNum - b.batchInfo.batchNum);
     
     // Combine all results in order
+    logger.debug(`Combining ${batchResults.length} batch results into indexed chunks...`);
     for (const { batchInfo, embeddings } of batchResults) {
       for (let j = 0; j < batchInfo.batch.length; j++) {
         const chunk = batchInfo.batch[j];
@@ -343,6 +362,7 @@ export class RAGDatabase {
       }
     }
     
+    logger.debug(`Writing ${indexedChunks.length} chunks to database...`);
     if (!this.table) {
       const tableData = indexedChunks.map(chunk => ({
         id: chunk.id,
@@ -356,6 +376,7 @@ export class RAGDatabase {
         hash: chunk.hash,
       }));
       this.table = await this.db.createTable("documents", tableData);
+      logger.debug(`Created new documents table`);
     } else {
       const tableData = indexedChunks.map(chunk => ({
         id: chunk.id,
@@ -369,6 +390,7 @@ export class RAGDatabase {
         hash: chunk.hash,
       }));
       await this.table.add(tableData);
+      logger.debug(`Added chunks to existing table`);
     }
     
     return { indexed: indexedChunks.length, skipped: skippedCount };
@@ -474,26 +496,14 @@ export class RAGDatabase {
     }
     
     try {
-      const allFiles = await this.fileIndexTable.query().toArray();
-      let found = false;
-      for (const row of allFiles) {
-        const record = row as Record<string, unknown>;
-        if (String(record.filePath) === filePath) {
-          found = true;
-          break;
-        }
-      }
-      
-      if (found) {
-        await this.removeFileFromIndex(filePath);
-      }
-      
+      await this.removeFileFromIndex(filePath);
       await this.fileIndexTable.add([{
         filePath,
         mtime,
         indexedAt: Date.now(),
       }]);
     } catch (error) {
+      logger.debug(`Error in markFileIndexed for ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
       await this.fileIndexTable.add([{
         filePath,
         mtime,
@@ -508,26 +518,10 @@ export class RAGDatabase {
     }
     
     try {
-      const allFiles = await this.fileIndexTable.query().toArray();
-      const toRemove: any[] = [];
-      for (const row of allFiles) {
-        const record = row as Record<string, unknown>;
-        if (String(record.filePath) === filePath) {
-          toRemove.push(record);
-        }
-      }
-      
-      if (toRemove.length > 0) {
-        for (const row of toRemove) {
-          try {
-            await this.fileIndexTable.delete(`filePath = '${String(row.filePath).replace(/'/g, "''")}'`);
-          } catch {
-            // Continue if delete fails
-          }
-        }
-      }
-    } catch {
-      // If query fails, continue
+      const escapedPath = filePath.replace(/'/g, "''");
+      await this.fileIndexTable.delete(`filePath = '${escapedPath}'`);
+    } catch (error) {
+      logger.debug(`Failed to remove file from index ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -537,16 +531,19 @@ export class RAGDatabase {
     }
     
     try {
-      const allFiles = await this.fileIndexTable.query().toArray();
+      const escapedPath = filePath.replace(/'/g, "''");
+      const results = await this.fileIndexTable
+        .query()
+        .where(`filePath = '${escapedPath}'`)
+        .toArray();
       
-      for (const row of allFiles) {
-        const record = row as Record<string, unknown>;
-        if (String(record.filePath) === filePath) {
-          const indexedMtime = Number(record.mtime || 0);
-          return indexedMtime === mtime;
-        }
+      if (results.length === 0) {
+        return false;
       }
-      return false;
+      
+      const record = results[0] as Record<string, unknown>;
+      const indexedMtime = Number(record.mtime || 0);
+      return indexedMtime === mtime;
     } catch {
       return false;
     }
@@ -558,27 +555,10 @@ export class RAGDatabase {
     }
     
     try {
-      const allChunks = await this.table.query().toArray();
-      
-      const idsToRemove: string[] = [];
-      for (const row of allChunks) {
-        const record = row as Record<string, unknown>;
-        if (String(record.filePath) === filePath) {
-          idsToRemove.push(String(record.id));
-        }
-      }
-      
-      if (idsToRemove.length > 0) {
-        for (const id of idsToRemove) {
-          try {
-            await this.table.delete(`id = '${id.replace(/'/g, "''")}'`);
-          } catch {
-            // Continue if delete fails
-          }
-        }
-      }
-    } catch {
-      // If query fails, continue
+      const escapedPath = filePath.replace(/'/g, "''");
+      await this.table.delete(`filePath = '${escapedPath}'`);
+    } catch (error) {
+      logger.debug(`Failed to remove chunks for ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 }
