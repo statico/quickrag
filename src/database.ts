@@ -6,6 +6,7 @@ import type { QuickRAGConfig } from "./config.js";
 import { ConcurrencyLimiter } from "./utils/concurrency.js";
 import { estimateTokens } from "./utils/tokens.js";
 import { logger } from "./utils/logger.js";
+import { withTimeout } from "./utils/timeout.js";
 import type { ListrTaskWrapper } from "listr2";
 
 export interface IndexedChunk {
@@ -320,23 +321,41 @@ export class RAGDatabase {
       
       return this.concurrencyLimiter.execute(async () => {
         try {
-          logger.debug(`Starting batch ${batchInfo.batchNum}/${totalBatches} (${texts.length} texts)`);
-          const embeddings = await this.embedWithRetry(texts, embeddingProvider, 3);
+          logger.info(`Starting batch ${batchInfo.batchNum}/${totalBatches} (${texts.length} texts, ~${batchInfo.batchTokenCount} tokens)`);
+          const startTime = Date.now();
+          
+          // Add timeout wrapper around embedWithRetry
+          const embeddings = await withTimeout(
+            this.embedWithRetry(texts, embeddingProvider, 3),
+            120000, // 2 minute timeout per batch
+            `Batch ${batchInfo.batchNum} timed out after 2 minutes`
+          );
+          
+          const duration = Date.now() - startTime;
           batchResults.push({ batchInfo, embeddings });
           completedBatches++;
+          logger.info(`Completed batch ${batchInfo.batchNum}/${totalBatches} in ${duration}ms`);
           if (task) {
             task.title = `Generating embeddings: ${completedBatches}/${totalBatches} batches`;
           }
-          logger.debug(`Completed batch ${batchInfo.batchNum}/${totalBatches}`);
         } catch (error) {
           logger.error(`Error in batch ${batchInfo.batchNum}: ${error instanceof Error ? error.message : String(error)}`);
+          if (error instanceof Error && error.stack) {
+            logger.error(`Stack: ${error.stack}`);
+          }
           throw error;
         }
       });
     });
     
-    logger.debug(`Waiting for ${batchPromises.length} batch promises to complete...`);
-    await Promise.all(batchPromises);
+    logger.info(`Waiting for ${batchPromises.length} batch promises to complete...`);
+    try {
+      await Promise.all(batchPromises);
+    } catch (error) {
+      logger.error(`Promise.all failed: ${error instanceof Error ? error.message : String(error)}`);
+      logger.error(`Completed batches: ${completedBatches}/${totalBatches}`);
+      throw error;
+    }
     logger.debug(`All batches completed, sorting results...`);
     
     // Sort results by batch number to maintain order
@@ -363,32 +382,34 @@ export class RAGDatabase {
     }
     
     logger.debug(`Writing ${indexedChunks.length} chunks to database...`);
+    const tableData = indexedChunks.map(chunk => ({
+      id: chunk.id,
+      text: chunk.text,
+      filePath: chunk.filePath,
+      startLine: chunk.startLine,
+      endLine: chunk.endLine,
+      startChar: chunk.startChar,
+      endChar: chunk.endChar,
+      vector: chunk.vector,
+      hash: chunk.hash,
+    }));
+    
     if (!this.table) {
-      const tableData = indexedChunks.map(chunk => ({
-        id: chunk.id,
-        text: chunk.text,
-        filePath: chunk.filePath,
-        startLine: chunk.startLine,
-        endLine: chunk.endLine,
-        startChar: chunk.startChar,
-        endChar: chunk.endChar,
-        vector: chunk.vector,
-        hash: chunk.hash,
-      }));
-      this.table = await this.db.createTable("documents", tableData);
-      logger.debug(`Created new documents table`);
+      try {
+        this.table = await this.db.createTable("documents", tableData);
+        logger.debug(`Created new documents table`);
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        if (errorMsg.includes("already exists") || errorMsg.includes("Table")) {
+          logger.debug(`Table already exists, opening existing table...`);
+          this.table = await this.db.openTable("documents");
+          await this.table.add(tableData);
+          logger.debug(`Added chunks to existing table`);
+        } else {
+          throw error;
+        }
+      }
     } else {
-      const tableData = indexedChunks.map(chunk => ({
-        id: chunk.id,
-        text: chunk.text,
-        filePath: chunk.filePath,
-        startLine: chunk.startLine,
-        endLine: chunk.endLine,
-        startChar: chunk.startChar,
-        endChar: chunk.endChar,
-        vector: chunk.vector,
-        hash: chunk.hash,
-      }));
       await this.table.add(tableData);
       logger.debug(`Added chunks to existing table`);
     }
@@ -431,12 +452,30 @@ export class RAGDatabase {
   }
 
   async getStats(): Promise<{ count: number }> {
+    logger.info("getStats() called");
+    logger.info(`Database state: db=${!!this.db}, table=${!!this.table}, dimensions=${this.dimensions}`);
+    
     if (!this.table) {
+      logger.error("getStats() failed: table is null");
       throw new Error("Database not initialized. Call initialize() first.");
     }
 
-    const count = await this.table.countRows();
-    return { count };
+    logger.info("Calling countRows() on table...");
+    try {
+      const count = await withTimeout(
+        this.table.countRows(),
+        30000,
+        "countRows() timed out after 30 seconds - database may be locked or corrupted"
+      );
+      logger.info(`countRows() returned: ${count}`);
+      return { count };
+    } catch (error) {
+      logger.error(`countRows() failed: ${error instanceof Error ? error.message : String(error)}`);
+      if (error instanceof Error) {
+        logger.error(`Error stack: ${error.stack}`);
+      }
+      throw error;
+    }
   }
 
   async getFileStats(): Promise<Array<{ filePath: string; chunkCount: number }>> {
@@ -574,11 +613,28 @@ export class RAGDatabase {
     }
     
     try {
-      const beforeCount = await this.table.countRows();
+      let beforeCount: number;
+      try {
+        beforeCount = await this.table.countRows();
+      } catch (error) {
+        logger.debug(`Could not count rows before removal (table may be corrupted): ${error instanceof Error ? error.message : String(error)}`);
+        beforeCount = 0;
+      }
       
       // LanceDB delete with filter doesn't work reliably, so we use a workaround:
       // get all rows, filter in memory, recreate table
-      const allRows = await this.table.query().toArray();
+      let allRows: Array<Record<string, unknown>>;
+      try {
+        allRows = await this.table.query().toArray();
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        if (errorMsg.includes("Not found") || errorMsg.includes("External error")) {
+          logger.debug(`Table data appears corrupted (missing files), skipping chunk removal for ${filePath}`);
+          return; // Table is corrupted, can't safely remove chunks
+        }
+        throw error;
+      }
+      
       const rowsToKeep = allRows.filter((row: Record<string, unknown>) => {
         const rowPath = String(row.filePath || '');
         return rowPath !== filePath;
@@ -591,6 +647,26 @@ export class RAGDatabase {
       }
       
       logger.info(`Removing ${deletedCount} chunks for ${filePath}`);
+      
+      // If no rows to keep, just drop the table
+      if (rowsToKeep.length === 0) {
+        try {
+          this.table = null;
+          await new Promise(resolve => setTimeout(resolve, 100));
+          await this.db.dropTable("documents");
+          logger.info(`Deleted all chunks for ${filePath} (table was empty after removal)`);
+          return;
+        } catch (error) {
+          logger.debug(`Failed to drop empty table: ${error instanceof Error ? error.message : String(error)}`);
+          // Try to reopen table
+          try {
+            this.table = await this.db.openTable("documents");
+          } catch {
+            // Table might not exist, which is fine
+          }
+          return;
+        }
+      }
       
       // Recreate table with remaining rows
       // Need to ensure vector is in the right format (array of numbers)
@@ -615,14 +691,61 @@ export class RAGDatabase {
         };
       });
       
-      await this.db.dropTable("documents");
-      this.table = await this.db.createTable("documents", tableData);
+      // Try to drop and recreate, with retry for "Directory not empty" errors
+      let retries = 3;
+      let lastError: Error | null = null;
       
-      const afterCount = await this.table.countRows();
-      logger.info(`Deleted ${deletedCount} chunks for ${filePath} (before: ${beforeCount}, after: ${afterCount})`);
+      while (retries > 0) {
+        try {
+          // Close the table reference first
+          this.table = null;
+          
+          // Small delay to let any pending operations complete
+          await new Promise(resolve => setTimeout(resolve, 100));
+          
+          await this.db.dropTable("documents");
+          
+          // Another small delay before recreating
+          await new Promise(resolve => setTimeout(resolve, 100));
+          
+          this.table = await this.db.createTable("documents", tableData);
+          
+          const afterCount = await this.table.countRows();
+          logger.info(`Deleted ${deletedCount} chunks for ${filePath} (before: ${beforeCount}, after: ${afterCount})`);
+          return; // Success
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+          const errorMsg = lastError.message;
+          
+          if (errorMsg.includes("Directory not empty") || errorMsg.includes("not empty")) {
+            retries--;
+            if (retries > 0) {
+              logger.debug(`Drop table failed (Directory not empty), retrying... (${retries} attempts left)`);
+              // Longer delay before retry
+              await new Promise(resolve => setTimeout(resolve, 500));
+              continue;
+            }
+          }
+          
+          // For other errors or out of retries, throw
+          throw lastError;
+        }
+      }
+      
+      // If we get here, all retries failed
+      throw lastError || new Error("Failed to remove chunks after retries");
     } catch (error) {
+      // Reopen table if we closed it but failed to recreate
+      if (!this.table) {
+        try {
+          this.table = await this.db.openTable("documents");
+        } catch {
+          // Ignore - table might not exist or be corrupted
+        }
+      }
+      
       logger.warn(`Failed to remove chunks for ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
-      throw error;
+      // Don't throw - allow indexing to continue even if removal fails
     }
   }
 }

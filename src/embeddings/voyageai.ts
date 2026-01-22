@@ -53,61 +53,81 @@ export class VoyageAIEmbeddingProvider implements EmbeddingProvider {
   }
 
   async embed(text: string): Promise<number[]> {
-    const response = await fetchWithTimeout(
-      `${this.baseUrl}/embeddings`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.apiKey}`,
+    logger.debug(`VoyageAI embed: calling ${this.baseUrl}/embeddings with model ${this.model}`);
+    const startTime = Date.now();
+    
+    try {
+      const response = await fetchWithTimeout(
+        `${this.baseUrl}/embeddings`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: this.model,
+            input: text,
+          }),
         },
-        body: JSON.stringify({
-          model: this.model,
-          input: text,
-        }),
-      },
-      300000
-    );
-
-    if (!response.ok) {
-      let errorMessage: string;
-      try {
-        const errorData = await response.json() as { error?: { message?: string } };
-        errorMessage = errorData.error?.message || `HTTP ${response.status}: ${response.statusText}`;
-      } catch {
-        errorMessage = await response.text() || `HTTP ${response.status}: ${response.statusText}`;
-      }
-      throw new Error(`VoyageAI API error: ${errorMessage}`);
-    }
-
-    const data = await response.json() as { data?: Array<{ embedding?: number[] }> };
-    if (!data.data || !Array.isArray(data.data) || data.data.length === 0) {
-      throw new Error("Invalid response from VoyageAI API: missing or empty data array");
-    }
-    
-    const embedding = data.data[0].embedding;
-    if (!embedding || !Array.isArray(embedding)) {
-      throw new Error("Invalid response from VoyageAI API: missing or invalid embedding");
-    }
-    
-    // Validate dimensions on first call
-    if (!this.dimensionsInitialized) {
-      this.dimensions = embedding.length;
-      this.dimensionsInitialized = true;
-    } else if (embedding.length !== this.dimensions) {
-      throw new Error(
-        `Embedding dimension mismatch: expected ${this.dimensions}, got ${embedding.length}. ` +
-        `This may indicate a model change. Please restart with the correct dimensions.`
+        60000 // 60 second timeout
       );
+      
+      const fetchDuration = Date.now() - startTime;
+      logger.debug(`VoyageAI embed: fetch completed in ${fetchDuration}ms, status=${response.status}`);
+
+      if (!response.ok) {
+        let errorMessage: string;
+        try {
+          const errorData = await response.json() as { error?: { message?: string } };
+          errorMessage = errorData.error?.message || `HTTP ${response.status}: ${response.statusText}`;
+        } catch {
+          errorMessage = await response.text() || `HTTP ${response.status}: ${response.statusText}`;
+        }
+        throw new Error(`VoyageAI API error: ${errorMessage}`);
+      }
+
+      const data = await response.json() as { data?: Array<{ embedding?: number[] }> };
+      if (!data.data || !Array.isArray(data.data) || data.data.length === 0) {
+        throw new Error("Invalid response from VoyageAI API: missing or empty data array");
+      }
+      
+      const embedding = data.data[0].embedding;
+      if (!embedding || !Array.isArray(embedding)) {
+        throw new Error("Invalid response from VoyageAI API: missing or invalid embedding");
+      }
+      
+      const totalDuration = Date.now() - startTime;
+      logger.debug(`VoyageAI embed: total time ${totalDuration}ms, embedding dims=${embedding.length}`);
+      
+      // Validate dimensions on first call
+      if (!this.dimensionsInitialized) {
+        this.dimensions = embedding.length;
+        this.dimensionsInitialized = true;
+      } else if (embedding.length !== this.dimensions) {
+        throw new Error(
+          `Embedding dimension mismatch: expected ${this.dimensions}, got ${embedding.length}. ` +
+          `This may indicate a model change. Please restart with the correct dimensions.`
+        );
+      }
+      
+      return embedding;
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      if (error instanceof Error && error.message.includes("timed out")) {
+        logger.error(`VoyageAI embed timed out after ${duration}ms. Is the API responding?`);
+      }
+      throw error;
     }
-    
-    return embedding;
   }
 
   async embedBatch(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) {
       return [];
     }
+    
+    logger.debug(`VoyageAI embedBatch: processing ${texts.length} texts`);
+    const startTime = Date.now();
     
     const filteredTexts = texts.filter(text => text.trim().length > 0);
     if (filteredTexts.length === 0) {
@@ -154,84 +174,100 @@ export class VoyageAIEmbeddingProvider implements EmbeddingProvider {
       throw new Error(`Failed to serialize request body: ${error instanceof Error ? error.message : String(error)}`);
     }
     
-    const response = await fetchWithTimeout(
-      `${this.baseUrl}/embeddings`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json; charset=utf-8",
-          Authorization: `Bearer ${this.apiKey}`,
+    logger.debug(`VoyageAI embedBatch: calling API with ${texts.length} texts (${requestBodyStr.length} bytes)`);
+    
+    try {
+      const response = await fetchWithTimeout(
+        `${this.baseUrl}/embeddings`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json; charset=utf-8",
+            Authorization: `Bearer ${this.apiKey}`,
+          },
+          body: requestBodyStr,
         },
-        body: requestBodyStr,
-      },
-      300000
-    );
-
-    if (!response.ok) {
-      let errorMessage: string;
-      let errorDetails: any = null;
-      let responseText: string = "";
-      try {
-        responseText = await response.text();
-        try {
-          errorDetails = JSON.parse(responseText);
-          const detail = errorDetails.detail || errorDetails.error?.message;
-          errorMessage = detail || JSON.stringify(errorDetails) || `HTTP ${response.status}: ${response.statusText}`;
-        } catch {
-          errorMessage = responseText || `HTTP ${response.status}: ${response.statusText}`;
-        }
-      } catch {
-        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
-      }
-      
-      if (errorMessage.includes("UTF-8") && texts.length > 1) {
-        logger.warn(`Batch failed due to UTF-8 encoding issue, retrying texts individually...`);
-        const individualEmbeddings: number[][] = [];
-        for (let i = 0; i < texts.length; i++) {
-          try {
-            const singleEmbedding = await this.embedBatch([texts[i]]);
-            individualEmbeddings.push(singleEmbedding[0]);
-          } catch (singleError) {
-            logger.warn(`Failed to embed text at index ${i}, using zero vector: ${singleError instanceof Error ? singleError.message : String(singleError)}`);
-            const dims = this.dimensionsInitialized ? this.dimensions : 1024;
-            individualEmbeddings.push(new Array(dims).fill(0));
-          }
-        }
-        return individualEmbeddings;
-      }
-      
-      const totalChars = texts.reduce((sum, t) => sum + t.length, 0);
-      const maxChars = Math.max(...texts.map(t => t.length));
-      const fullError = `VoyageAI API error: ${errorMessage} (batch size: ${texts.length}, total chars: ${totalChars}, max chunk chars: ${maxChars}, model: ${this.model})`;
-      throw new Error(fullError);
-    }
-
-    const data = await response.json() as { data?: Array<{ embedding?: number[] }> };
-    if (!data.data || !Array.isArray(data.data) || data.data.length !== texts.length) {
-      throw new Error(
-        `Invalid response from VoyageAI API: expected ${texts.length} embeddings, got ${data.data?.length ?? 0}`
+        120000 // 2 minute timeout for batches
       );
-    }
-    
-    const embeddings = data.data.map((item, index) => {
-      if (!item.embedding || !Array.isArray(item.embedding)) {
-        throw new Error(`Invalid embedding at index ${index}`);
-      }
       
-      // Validate dimensions
-      if (this.dimensionsInitialized && item.embedding.length !== this.dimensions) {
+      const fetchDuration = Date.now() - startTime;
+      logger.debug(`VoyageAI embedBatch: fetch completed in ${fetchDuration}ms, status=${response.status}`);
+
+      if (!response.ok) {
+        let errorMessage: string;
+        let errorDetails: any = null;
+        let responseText: string = "";
+        try {
+          responseText = await response.text();
+          try {
+            errorDetails = JSON.parse(responseText);
+            const detail = errorDetails.detail || errorDetails.error?.message;
+            errorMessage = detail || JSON.stringify(errorDetails) || `HTTP ${response.status}: ${response.statusText}`;
+          } catch {
+            errorMessage = responseText || `HTTP ${response.status}: ${response.statusText}`;
+          }
+        } catch {
+          errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+        }
+        
+        if (errorMessage.includes("UTF-8") && texts.length > 1) {
+          logger.warn(`Batch failed due to UTF-8 encoding issue, retrying texts individually...`);
+          const individualEmbeddings: number[][] = [];
+          for (let i = 0; i < texts.length; i++) {
+            try {
+              const singleEmbedding = await this.embedBatch([texts[i]]);
+              individualEmbeddings.push(singleEmbedding[0]);
+            } catch (singleError) {
+              logger.warn(`Failed to embed text at index ${i}, using zero vector: ${singleError instanceof Error ? singleError.message : String(singleError)}`);
+              const dims = this.dimensionsInitialized ? this.dimensions : 1024;
+              individualEmbeddings.push(new Array(dims).fill(0));
+            }
+          }
+          return individualEmbeddings;
+        }
+        
+        const totalChars = texts.reduce((sum, t) => sum + t.length, 0);
+        const maxChars = Math.max(...texts.map(t => t.length));
+        const fullError = `VoyageAI API error: ${errorMessage} (batch size: ${texts.length}, total chars: ${totalChars}, max chunk chars: ${maxChars}, model: ${this.model})`;
+        throw new Error(fullError);
+      }
+
+      const data = await response.json() as { data?: Array<{ embedding?: number[] }> };
+      if (!data.data || !Array.isArray(data.data) || data.data.length !== texts.length) {
         throw new Error(
-          `Embedding dimension mismatch at index ${index}: expected ${this.dimensions}, got ${item.embedding.length}`
+          `Invalid response from VoyageAI API: expected ${texts.length} embeddings, got ${data.data?.length ?? 0}`
         );
-      } else if (!this.dimensionsInitialized) {
-        this.dimensions = item.embedding.length;
-        this.dimensionsInitialized = true;
       }
       
-      return item.embedding;
-    });
-    
-    return embeddings;
+      const embeddings = data.data.map((item, index) => {
+        if (!item.embedding || !Array.isArray(item.embedding)) {
+          throw new Error(`Invalid embedding at index ${index}`);
+        }
+        
+        // Validate dimensions
+        if (this.dimensionsInitialized && item.embedding.length !== this.dimensions) {
+          throw new Error(
+            `Embedding dimension mismatch at index ${index}: expected ${this.dimensions}, got ${item.embedding.length}`
+          );
+        } else if (!this.dimensionsInitialized) {
+          this.dimensions = item.embedding.length;
+          this.dimensionsInitialized = true;
+        }
+        
+        return item.embedding;
+      });
+      
+      const totalDuration = Date.now() - startTime;
+      logger.debug(`VoyageAI embedBatch: completed all ${texts.length} texts in ${totalDuration}ms`);
+      
+      return embeddings;
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      if (error instanceof Error && error.message.includes("timed out")) {
+        logger.error(`VoyageAI embedBatch timed out after ${duration}ms. Is the API responding?`);
+      }
+      throw error;
+    }
   }
 
   getDimensions(): number {

@@ -134,13 +134,21 @@ export async function indexDirectory(
       },
     },
     {
-      title: "Indexing files",
+      title: `Indexing ${ctx.filesToIndex.length} files`,
       enabled: (ctx) => ctx.filesToIndex.length > 0,
-      task: (ctx, task) =>
-        task.newListr(
-          ctx.filesToIndex.map((file) => ({
+      task: (ctx, task) => {
+        if (task && ctx.filesToIndex.length > 0) {
+          task.title = `Indexing ${ctx.filesToIndex.length} files (processing in batches of 4)...`;
+        }
+        return task.newListr(
+          ctx.filesToIndex.map((file, index) => ({
             title: file.path,
             task: async (ctx, task) => {
+              const fileNum = index + 1;
+              if (task && ctx.filesToIndex.length > 10) {
+                task.title = `[${fileNum}/${ctx.filesToIndex.length}] ${file.path}`;
+              }
+              
               if (!clear) {
                 await ctx.db.removeFileChunks(file.path);
                 await ctx.db.removeFileFromIndex(file.path);
@@ -157,12 +165,20 @@ export async function indexDirectory(
               }
 
               if (task) {
-                task.title = `Chunking ${file.path}...`;
+                if (ctx.filesToIndex.length > 10) {
+                  task.title = `[${fileNum}/${ctx.filesToIndex.length}] Chunking ${file.path}...`;
+                } else {
+                  task.title = `Chunking ${file.path}...`;
+                }
               }
               const fileChunks = chunkText(content, file.path, chunkingOptions, ctx.chunker);
               
               if (task && fileChunks.length > 0) {
-                task.title = `${file.path} (${fileChunks.length} chunks)`;
+                if (ctx.filesToIndex.length > 10) {
+                  task.title = `[${fileNum}/${ctx.filesToIndex.length}] ${file.path} (${fileChunks.length} chunks)`;
+                } else {
+                  task.title = `${file.path} (${fileChunks.length} chunks)`;
+                }
               }
 
               if (fileChunks.length > 0) {
@@ -170,8 +186,14 @@ export async function indexDirectory(
                   const result = await ctx.db.indexChunks(fileChunks, embeddingProvider, ctx.existingHashes, task);
                   ctx.totalIndexed += result.indexed;
                   ctx.totalSkipped += result.skipped;
+                  if (task && ctx.filesToIndex.length > 10) {
+                    task.title = `[${fileNum}/${ctx.filesToIndex.length}] ✓ ${file.path} (${result.indexed} new, ${result.skipped} skipped)`;
+                  }
                 } catch (error) {
                   logger.error(`Failed to index ${file.path}: ${error instanceof Error ? error.message : String(error)}`);
+                  if (task && ctx.filesToIndex.length > 10) {
+                    task.title = `[${fileNum}/${ctx.filesToIndex.length}] ✗ ${file.path} (error)`;
+                  }
                   throw error;
                 }
               }
@@ -180,22 +202,33 @@ export async function indexDirectory(
             },
           })),
           { concurrent: 4, exitOnError: false }
-        ),
+        );
+      },
     },
     {
       title: "Finalizing",
       task: async (ctx) => {
+        logger.info("Starting finalization...");
         try {
+          logger.info("Getting database stats...");
           ctx.stats = await ctx.db.getStats();
-        } catch {
+          logger.info(`Stats retrieved: ${ctx.stats.count} chunks`);
+        } catch (error) {
+          logger.error(`Failed to get stats: ${error instanceof Error ? error.message : String(error)}`);
+          if (error instanceof Error) {
+            logger.error(`Error stack: ${error.stack}`);
+          }
           ctx.stats = { count: 0 };
         }
+        logger.info("Finalization complete");
       },
     },
   ]);
 
   try {
+    logger.info("Starting task execution...");
     await tasks.run(ctx);
+    logger.info("Task execution completed, preparing summary...");
     const deletedMsg = ctx.totalDeleted > 0
       ? ` Removed ${ctx.totalDeleted} deleted file${ctx.totalDeleted !== 1 ? 's' : ''}.`
       : "";
@@ -212,6 +245,7 @@ export async function indexDirectory(
         `Indexing complete!${deletedMsg} Total chunks in database: ${ctx.stats.count}`
       );
     }
+    logger.info("Indexing function completed successfully");
   } catch (error) {
     if (error instanceof Error && error.message === "All files are already indexed and up to date.") {
       logger.info("All files are already indexed and up to date.");
