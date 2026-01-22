@@ -1,0 +1,31 @@
+class Quickrag < Formula
+  desc "A fast and flexible RAG tool for indexing and querying documents"
+  homepage "https://github.com/statico/quickrag"
+  version "__VERSION__"
+  license "Unlicense"
+
+  if Hardware::CPU.arm?
+    url "https://github.com/statico/quickrag/releases/download/v#{version}/quickrag-darwin-arm64"
+    sha256 "__SHA256_ARM64__"
+  else
+    url "https://github.com/statico/quickrag/releases/download/v#{version}/quickrag-darwin-x64"
+    sha256 "__SHA256_X86_64__"
+  end
+
+  livecheck do
+    url "https://github.com/statico/quickrag/releases"
+    regex(/^v?(\d+(?:\.\d+)+)$/i)
+  end
+
+  def install
+    binary_name = "quickrag-darwin-#{Hardware::CPU.arm? ? "arm64" : "x64"}"
+    bin.install binary_name => "quickrag"
+  end
+
+  test do
+    # Test that the binary exists and runs
+    assert_match "quickrag", shell_output("#{bin}/quickrag --help")
+    system "#{bin}/quickrag", "init"
+    assert_predicate "#{Dir.home}/.config/quickrag/config.yaml", :exist?
+  end
+end

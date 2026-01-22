@@ -41,6 +41,12 @@ $ quickrag query gutenberg.rag "Who is Sherlock Holmes?"
 
 ## Installation
 
+### Homebrew (macOS)
+
+```sh
+brew install statico/quickrag/quickrag
+```
+
 ### Download Binary
 
 ```sh

@@ -42,6 +42,10 @@ jobs:
       - name: Build executable
         run: bun build src/index.ts --compile --target=${{ matrix.target }} --outfile=${{ matrix.artifact }}
 
+      - name: Make executable (macOS)
+        if: matrix.os == 'macos-latest'
+        run: chmod +x ${{ matrix.artifact }}
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -54,10 +58,115 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
 
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          VERSION=${TAG#v}
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION" >&2
+
+      - name: Generate Homebrew formula
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          FORMULA_DIR="homebrew"
+          mkdir -p "$FORMULA_DIR"
+          
+          # Find macOS binaries (artifacts are in subdirectories)
+          ARM64_FILE=$(find artifacts -name "quickrag-darwin-arm64" -type f | head -1)
+          X86_64_FILE=$(find artifacts -name "quickrag-darwin-x64" -type f | head -1)
+          
+          if [ -f "$ARM64_FILE" ]; then
+            SHA256_ARM64=$(shasum -a 256 "$ARM64_FILE" | awk '{print $1}')
+            echo "Computed ARM64 sha256: $SHA256_ARM64" >&2
+          else
+            echo "WARNING: ARM64 binary not found at $ARM64_FILE, formula may be incomplete" >&2
+            SHA256_ARM64="PLACEHOLDER_ARM64_SHA256"
+          fi
+          
+          if [ -f "$X86_64_FILE" ]; then
+            SHA256_X86_64=$(shasum -a 256 "$X86_64_FILE" | awk '{print $1}')
+            echo "Computed x86_64 sha256: $SHA256_X86_64" >&2
+          else
+            echo "WARNING: x86_64 binary not found at $X86_64_FILE, formula may be incomplete" >&2
+            SHA256_X86_64="PLACEHOLDER_X86_64_SHA256"
+          fi
+          
+          TEMPLATE_PATH="packaging/homebrew/quickrag.rb.template"
+          if [ ! -f "$TEMPLATE_PATH" ]; then
+            echo "ERROR: Homebrew template not found at $TEMPLATE_PATH" >&2
+            exit 1
+          fi
+          OUT_FORMULA="$FORMULA_DIR/quickrag.rb"
+          # Replace template placeholders with release metadata
+          sed \
+            -e "s|__VERSION__|$VERSION|g" \
+            -e "s|__SHA256_ARM64__|$SHA256_ARM64|g" \
+            -e "s|__SHA256_X86_64__|$SHA256_X86_64|g" \
+            "$TEMPLATE_PATH" > "$OUT_FORMULA"
+          echo "Generated formula at $OUT_FORMULA:" >&2
+          grep -E 'version\s+"|sha256 "' "$OUT_FORMULA" >&2 || true
+
+      - name: Update Homebrew tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || '' }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          TAP_REPO="statico/homebrew-quickrag"
+          
+          if [ ! -f "homebrew/quickrag.rb" ]; then
+            echo "homebrew/quickrag.rb not found; skipping tap update" >&2
+            exit 0
+          fi
+          
+          # Clone or update the tap repository
+          TAP_DIR="homebrew-quickrag"
+          if [ -d "$TAP_DIR" ]; then
+            rm -rf "$TAP_DIR"
+          fi
+          
+          if [ -n "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${TAP_REPO}.git" "$TAP_DIR" || {
+              echo "Tap repository not found; create it at github.com/${TAP_REPO}" >&2
+              exit 0
+            }
+          else
+            git clone "https://github.com/${TAP_REPO}.git" "$TAP_DIR" || {
+              echo "Tap repository not found; create it at github.com/${TAP_REPO}" >&2
+              echo "HOMEBREW_TAP_TOKEN not set; skipping tap update" >&2
+              exit 0
+            }
+          fi
+          
+          mkdir -p "$TAP_DIR/Formula"
+          cp homebrew/quickrag.rb "$TAP_DIR/Formula/quickrag.rb"
+          pushd "$TAP_DIR" >/dev/null
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/quickrag.rb || true
+          if git diff --cached --quiet; then
+            echo "Tap formula unchanged; skipping push" >&2
+            popd >/dev/null
+            exit 0
+          fi
+          git commit -m "chore(homebrew): update formula to v${VERSION}"
+          if [ -n "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            git push origin main || git push origin master || echo "Push failed; ensure HOMEBREW_TAP_TOKEN has repo permissions"
+          else
+            echo "HOMEBREW_TAP_TOKEN not set; manual push required" >&2
+          fi
+          popd >/dev/null
 
       - name: Create release
         uses: softprops/action-gh-release@v2
