@@ -2,7 +2,6 @@ import { RAGDatabase } from "./database.js";
 import type { EmbeddingProvider } from "./embeddings/base.js";
 import type { IndexedChunk } from "./database.js";
 import { logger } from "./utils/logger.js";
-import ora from "ora";
 
 export async function queryDatabase(
   dbPath: string,
@@ -15,9 +14,7 @@ export async function queryDatabase(
   
   const dbDimensions = db.getDimensions();
   
-  const spinner = ora("Generating query embedding...").start();
   const queryVector = await embeddingProvider.embed(query);
-  spinner.succeed("Query embedding generated");
   
   if (queryVector.length !== dbDimensions) {
     throw new Error(
@@ -27,9 +24,7 @@ export async function queryDatabase(
     );
   }
   
-  const searchSpinner = ora("Searching database...").start();
   const results = await db.search(queryVector, topK);
-  searchSpinner.succeed(`Found ${results.length} result${results.length !== 1 ? 's' : ''}`);
   
   return results;
 }

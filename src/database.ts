@@ -7,7 +7,6 @@ import { ConcurrencyLimiter } from "./utils/concurrency.js";
 import { estimateTokens } from "./utils/tokens.js";
 import { logger } from "./utils/logger.js";
 import cliProgress from "cli-progress";
-import ora from "ora";
 
 export interface IndexedChunk {
   id: string;
@@ -203,7 +202,8 @@ export class RAGDatabase {
   async indexChunks(
     chunks: DocumentChunk[],
     embeddingProvider: EmbeddingProvider,
-    existingHashes?: Set<string>
+    existingHashes?: Set<string>,
+    multibar?: cliProgress.MultiBar
   ): Promise<{ indexed: number; skipped: number }> {
     if (!this.db) {
       throw new Error("Database not initialized. Call initialize() first.");
@@ -294,14 +294,18 @@ export class RAGDatabase {
     
     totalBatches = batches.length;
     
-    const batchProgressBar = new cliProgress.SingleBar({
-      format: "Embedding batches |{bar}| {percentage}% | {value}/{total} batches | ETA: {eta}s | {chunks} chunks",
-      barCompleteChar: "\u2588",
-      barIncompleteChar: "\u2591",
-      hideCursor: true,
-    }, cliProgress.Presets.shades_classic);
+    const batchProgressBar = multibar 
+      ? multibar.create(totalBatches, 0, { label: "Embeddings" })
+      : new cliProgress.SingleBar({
+          format: "Embedding batches |{bar}| {percentage}% | {value}/{total} batches | ETA: {eta}s",
+          barCompleteChar: "\u2588",
+          barIncompleteChar: "\u2591",
+          hideCursor: true,
+        }, cliProgress.Presets.shades_classic);
     
-    batchProgressBar.start(totalBatches, 0, { chunks: 0 });
+    if (!multibar) {
+      (batchProgressBar as cliProgress.SingleBar).start(totalBatches, 0);
+    }
     
     const batchResults: Array<{ batchInfo: BatchInfo; embeddings: number[][] }> = [];
     let completedBatches = 0;
@@ -314,7 +318,7 @@ export class RAGDatabase {
           const embeddings = await this.embedWithRetry(texts, embeddingProvider, 3);
           batchResults.push({ batchInfo, embeddings });
           completedBatches++;
-          batchProgressBar.update(completedBatches, { chunks: batchInfo.batch.length });
+          batchProgressBar.update(completedBatches);
         } catch (error) {
           logger.error(`Error in batch ${batchInfo.batchNum}: ${error instanceof Error ? error.message : String(error)}`);
           throw error;
@@ -323,7 +327,9 @@ export class RAGDatabase {
     });
     
     await Promise.all(batchPromises);
-    batchProgressBar.stop();
+    if (!multibar) {
+      (batchProgressBar as cliProgress.SingleBar).stop();
+    }
     
     // Sort results by batch number to maintain order
     batchResults.sort((a, b) => a.batchInfo.batchNum - b.batchInfo.batchNum);
@@ -347,8 +353,6 @@ export class RAGDatabase {
       }
     }
     
-    const dbSpinner = ora("Writing to database...").start();
-    
     if (!this.table) {
       const tableData = indexedChunks.map(chunk => ({
         id: chunk.id,
@@ -362,7 +366,6 @@ export class RAGDatabase {
         hash: chunk.hash,
       }));
       this.table = await this.db.createTable("documents", tableData);
-      dbSpinner.succeed("Created new table");
     } else {
       const tableData = indexedChunks.map(chunk => ({
         id: chunk.id,
@@ -376,7 +379,6 @@ export class RAGDatabase {
         hash: chunk.hash,
       }));
       await this.table.add(tableData);
-      dbSpinner.succeed("Inserted into database");
     }
     
     return { indexed: indexedChunks.length, skipped: skippedCount };

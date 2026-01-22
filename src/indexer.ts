@@ -6,7 +6,6 @@ import { createChunker, type ChunkerType } from "./chunkers/index.js";
 import { readFile } from "fs/promises";
 import { logger } from "./utils/logger.js";
 import cliProgress from "cli-progress";
-import ora from "ora";
 
 export async function indexDirectory(
   dirPath: string,
@@ -19,19 +18,19 @@ export async function indexDirectory(
   const chunkerType: ChunkerType = config?.chunking?.strategy || "recursive-token";
   logger.info(`Parsing documents from ${dirPath}... (using ${chunkerType} chunker)`);
   
-  const spinner = ora("Detecting embedding dimensions...").start();
+  logger.info("Detecting embedding dimensions...");
   const testEmbedding = await embeddingProvider.embed("test");
   const dimensions = testEmbedding.length;
-  spinner.succeed(`Detected embedding dimensions: ${dimensions}`);
+  logger.success(`Detected embedding dimensions: ${dimensions}`);
   
   const db = new RAGDatabase(dbPath, dimensions, config);
   await db.initialize();
   
   if (clear) {
-    const clearSpinner = ora("Clearing existing index...").start();
+    logger.info("Clearing existing index...");
     await db.clearDatabase();
     await db.initialize();
-    clearSpinner.succeed("Cleared existing index");
+    logger.success("Cleared existing index");
   }
   
   const allFiles = await getFiles(dirPath);
@@ -63,20 +62,20 @@ export async function indexDirectory(
   let totalIndexed = 0;
   let totalSkipped = 0;
   
-  const fileProgressBar = new cliProgress.SingleBar({
-    format: "Processing files |{bar}| {percentage}% | {value}/{total} files | {file}",
+  const multibar = new cliProgress.MultiBar({
+    clearOnComplete: false,
+    hideCursor: true,
+    format: "{label} |{bar}| {percentage}% | {value}/{total}",
     barCompleteChar: "\u2588",
     barIncompleteChar: "\u2591",
-    hideCursor: true,
   }, cliProgress.Presets.shades_classic);
   
-  fileProgressBar.start(filesToIndex.length, 0, { file: "" });
+  const fileProgressBar = multibar.create(filesToIndex.length, 0, { label: "Files" });
   
   const chunker = createChunker(chunkerType);
   
   for (let i = 0; i < filesToIndex.length; i++) {
     const file = filesToIndex[i];
-    fileProgressBar.update(i, { file: file.path });
     
     try {
       if (!clear) {
@@ -97,19 +96,20 @@ export async function indexDirectory(
       const fileChunks = chunkText(content, file.path, chunkingOptions, chunker);
       
       if (fileChunks.length > 0) {
-        const result = await db.indexChunks(fileChunks, embeddingProvider, existingHashes);
+        const result = await db.indexChunks(fileChunks, embeddingProvider, existingHashes, multibar);
         totalIndexed += result.indexed;
         totalSkipped += result.skipped;
       }
       
       await db.markFileIndexed(file.path, file.mtime);
+      fileProgressBar.update(i + 1);
     } catch (error) {
       logger.error(`Error processing ${file.path}: ${error instanceof Error ? error.message : String(error)}`);
+      fileProgressBar.update(i + 1);
     }
   }
   
-  fileProgressBar.update(filesToIndex.length, { file: "Complete" });
-  fileProgressBar.stop();
+  multibar.stop();
   
   let stats = { count: 0 };
   try {
