@@ -21,33 +21,50 @@ The test directory contains sample documents for testing. Use the test config fi
 
 ### Basic Test Commands
 
-**Index test data:**
+**Index test data (with timing):**
 ```bash
-bun run src/index.ts index test/ --config test/config.yaml --clear
+time bun run src/index.ts index test/ --config test/config.yaml --clear
 ```
 
 **Query the indexed data:**
 ```bash
-bun run src/index.ts query index.rag "who is sherlock holmes" --config test/config.yaml
-bun run src/index.ts query index.rag "what is frankenstein" --config test/config.yaml
+time bun run src/index.ts query index.rag "who is sherlock holmes" --config test/config.yaml
+time bun run src/index.ts query index.rag "what is frankenstein" --config test/config.yaml
 ```
 
-**Test deduplication:**
+**Test deduplication (with timing):**
 ```bash
 # First index
-bun run src/index.ts index test/ --config test/config.yaml --clear
+time bun run src/index.ts index test/ --config test/config.yaml --clear
 
-# Index again (should skip existing chunks)
-bun run src/index.ts index test/ --config test/config.yaml
+# Index again (should skip existing chunks - should be very fast)
+time bun run src/index.ts index test/ --config test/config.yaml
 
 # Modify a file and re-index (should only index new chunks)
 echo "test" >> test/sherlock-holmes.txt
-bun run src/index.ts index test/ --config test/config.yaml
+time bun run src/index.ts index test/ --config test/config.yaml
 git checkout test/sherlock-holmes.txt  # restore file
 ```
 
+### Performance Testing
+
+**Compare indexing performance:**
+```bash
+# Full index (should show batch counts and timing)
+time bun run src/index.ts index test/ --config test/config.yaml --clear
+
+# Re-index (should be fast, skipping existing chunks)
+time bun run src/index.ts index test/ --config test/config.yaml
+```
+
+**Expected timing:**
+- Initial indexing: Depends on model speed, typically 10-60 seconds for test data
+- Re-indexing (all chunks exist): Should be < 1 second (just checks hashes)
+- Partial re-indexing: Time proportional to new chunks only
+
 ### Expected Results
 - Indexing should process chunks across files (cross-file batching)
-- Batch sizes should respect config (default: 64 texts per batch)
+- Batch sizes should use defaults (64 texts per batch)
 - Deduplication should skip chunks that already exist by hash
 - Queries should return relevant results from both test files
+- Re-indexing should be very fast when chunks already exist
