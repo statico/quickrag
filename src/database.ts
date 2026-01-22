@@ -6,7 +6,7 @@ import type { QuickRAGConfig } from "./config.js";
 import { ConcurrencyLimiter } from "./utils/concurrency.js";
 import { estimateTokens } from "./utils/tokens.js";
 import { logger } from "./utils/logger.js";
-import cliProgress from "cli-progress";
+import type { ListrTaskWrapper } from "listr2";
 
 export interface IndexedChunk {
   id: string;
@@ -203,7 +203,7 @@ export class RAGDatabase {
     chunks: DocumentChunk[],
     embeddingProvider: EmbeddingProvider,
     existingHashes?: Set<string>,
-    multibar?: cliProgress.MultiBar
+    task?: ListrTaskWrapper<any, any, any>
   ): Promise<{ indexed: number; skipped: number }> {
     if (!this.db) {
       throw new Error("Database not initialized. Call initialize() first.");
@@ -233,7 +233,11 @@ export class RAGDatabase {
     }
     
     if (chunksToIndex.length > 100) {
-      logger.info(`Indexing ${chunksToIndex.length} new chunks (${skippedCount} already exist)...`);
+      if (task) {
+        task.title = `Indexing ${chunksToIndex.length} new chunks (${skippedCount} already exist)...`;
+      } else {
+        logger.info(`Indexing ${chunksToIndex.length} new chunks (${skippedCount} already exist)...`);
+      }
     }
     
     // Generate embeddings in batches with improved sizing
@@ -294,19 +298,6 @@ export class RAGDatabase {
     
     totalBatches = batches.length;
     
-    const batchProgressBar = multibar 
-      ? multibar.create(totalBatches, 0, { label: "Embeddings" })
-      : new cliProgress.SingleBar({
-          format: "Embedding batches |{bar}| {percentage}% | {value}/{total} batches | ETA: {eta}s",
-          barCompleteChar: "\u2588",
-          barIncompleteChar: "\u2591",
-          hideCursor: true,
-        }, cliProgress.Presets.shades_classic);
-    
-    if (!multibar) {
-      (batchProgressBar as cliProgress.SingleBar).start(totalBatches, 0);
-    }
-    
     const batchResults: Array<{ batchInfo: BatchInfo; embeddings: number[][] }> = [];
     let completedBatches = 0;
     
@@ -318,7 +309,9 @@ export class RAGDatabase {
           const embeddings = await this.embedWithRetry(texts, embeddingProvider, 3);
           batchResults.push({ batchInfo, embeddings });
           completedBatches++;
-          batchProgressBar.update(completedBatches);
+          if (task) {
+            task.title = `Generating embeddings: ${completedBatches}/${totalBatches} batches`;
+          }
         } catch (error) {
           logger.error(`Error in batch ${batchInfo.batchNum}: ${error instanceof Error ? error.message : String(error)}`);
           throw error;
@@ -327,9 +320,6 @@ export class RAGDatabase {
     });
     
     await Promise.all(batchPromises);
-    if (!multibar) {
-      (batchProgressBar as cliProgress.SingleBar).stop();
-    }
     
     // Sort results by batch number to maintain order
     batchResults.sort((a, b) => a.batchInfo.batchNum - b.batchInfo.batchNum);

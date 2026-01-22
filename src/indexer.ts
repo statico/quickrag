@@ -5,7 +5,20 @@ import type { QuickRAGConfig } from "./config.js";
 import { createChunker, type ChunkerType } from "./chunkers/index.js";
 import { readFile } from "fs/promises";
 import { logger } from "./utils/logger.js";
-import cliProgress from "cli-progress";
+import { Listr } from "listr2";
+
+interface IndexContext {
+  chunkerType: ChunkerType;
+  dimensions: number;
+  db: RAGDatabase;
+  allFiles: FileInfo[];
+  filesToIndex: FileInfo[];
+  existingHashes: Set<string>;
+  chunker: ReturnType<typeof createChunker>;
+  totalIndexed: number;
+  totalSkipped: number;
+  stats: { count: number };
+}
 
 export async function indexDirectory(
   dirPath: string,
@@ -15,109 +28,137 @@ export async function indexDirectory(
   clear: boolean = false,
   config?: QuickRAGConfig
 ): Promise<void> {
-  const chunkerType: ChunkerType = config?.chunking?.strategy || "recursive-token";
-  logger.info(`Parsing documents from ${dirPath}... (using ${chunkerType} chunker)`);
-  
-  logger.info("Detecting embedding dimensions...");
-  const testEmbedding = await embeddingProvider.embed("test");
-  const dimensions = testEmbedding.length;
-  logger.success(`Detected embedding dimensions: ${dimensions}`);
-  
-  const db = new RAGDatabase(dbPath, dimensions, config);
-  await db.initialize();
-  
-  if (clear) {
-    logger.info("Clearing existing index...");
-    await db.clearDatabase();
-    await db.initialize();
-    logger.success("Cleared existing index");
-  }
-  
-  const allFiles = await getFiles(dirPath);
-  
-  if (allFiles.length === 0) {
-    logger.warn("No documents found to index.");
-    return;
-  }
-  
-  const indexedFiles = await db.getIndexedFiles();
-  const filesToIndex: FileInfo[] = [];
-  
-  for (const file of allFiles) {
-    if (clear || !indexedFiles.has(file.path) || !(await db.isFileIndexed(file.path, file.mtime))) {
-      filesToIndex.push(file);
-    }
-  }
-  
-  if (filesToIndex.length === 0) {
-    logger.success("All files are already indexed and up to date.");
-    const stats = await db.getStats();
-    logger.info(`Total chunks in database: ${stats.count}`);
-    return;
-  }
-  
-  logger.info(`Found ${filesToIndex.length} file(s) to index (${allFiles.length - filesToIndex.length} already indexed)`);
-  
-  const existingHashes = await db.getExistingChunkHashes();
-  let totalIndexed = 0;
-  let totalSkipped = 0;
-  
-  const multibar = new cliProgress.MultiBar({
-    clearOnComplete: false,
-    hideCursor: true,
-    format: "{label} |{bar}| {percentage}% | {value}/{total}",
-    barCompleteChar: "\u2588",
-    barIncompleteChar: "\u2591",
-  }, cliProgress.Presets.shades_classic);
-  
-  const fileProgressBar = multibar.create(filesToIndex.length, 0, { label: "Files" });
-  
-  const chunker = createChunker(chunkerType);
-  
-  for (let i = 0; i < filesToIndex.length; i++) {
-    const file = filesToIndex[i];
-    
-    try {
-      if (!clear) {
-        await db.removeFileChunks(file.path);
-        await db.removeFileFromIndex(file.path);
-      }
-      
-      let content: string;
-      try {
-        content = await readFile(file.path, "utf-8");
-      } catch (readError) {
-        logger.warn(`Could not read ${file.path} as UTF-8, trying with error handling...`);
-        const buffer = await readFile(file.path);
-        const decoder = new TextDecoder("utf-8", { fatal: false });
-        content = decoder.decode(buffer);
-      }
-      
-      const fileChunks = chunkText(content, file.path, chunkingOptions, chunker);
-      
-      if (fileChunks.length > 0) {
-        const result = await db.indexChunks(fileChunks, embeddingProvider, existingHashes, multibar);
-        totalIndexed += result.indexed;
-        totalSkipped += result.skipped;
-      }
-      
-      await db.markFileIndexed(file.path, file.mtime);
-      fileProgressBar.update(i + 1);
-    } catch (error) {
-      logger.error(`Error processing ${file.path}: ${error instanceof Error ? error.message : String(error)}`);
-      fileProgressBar.update(i + 1);
-    }
-  }
-  
-  multibar.stop();
-  
-  let stats = { count: 0 };
+  const ctx: IndexContext = {
+    chunkerType: config?.chunking?.strategy || "recursive-token",
+    dimensions: 0,
+    db: null as any,
+    allFiles: [],
+    filesToIndex: [],
+    existingHashes: new Set(),
+    chunker: null as any,
+    totalIndexed: 0,
+    totalSkipped: 0,
+    stats: { count: 0 },
+  };
+
+  const tasks = new Listr<IndexContext>([
+    {
+      title: `Parsing documents from ${dirPath}... (using ${ctx.chunkerType} chunker)`,
+      task: async (ctx) => {
+        ctx.allFiles = await getFiles(dirPath);
+        if (ctx.allFiles.length === 0) {
+          throw new Error("No documents found to index.");
+        }
+      },
+    },
+    {
+      title: "Detecting embedding dimensions",
+      task: async (ctx) => {
+        const testEmbedding = await embeddingProvider.embed("test");
+        ctx.dimensions = testEmbedding.length;
+      },
+    },
+    {
+      title: "Initializing database",
+      task: async (ctx) => {
+        ctx.db = new RAGDatabase(dbPath, ctx.dimensions, config);
+        await ctx.db.initialize();
+      },
+    },
+    {
+      title: "Clearing existing index",
+      enabled: () => clear,
+      task: async (ctx) => {
+        await ctx.db.clearDatabase();
+        await ctx.db.initialize();
+      },
+    },
+    {
+      title: "Finding files to index",
+      task: async (ctx) => {
+        const indexedFiles = await ctx.db.getIndexedFiles();
+        for (const file of ctx.allFiles) {
+          if (clear || !indexedFiles.has(file.path) || !(await ctx.db.isFileIndexed(file.path, file.mtime))) {
+            ctx.filesToIndex.push(file);
+          }
+        }
+        if (ctx.filesToIndex.length === 0) {
+          ctx.stats = await ctx.db.getStats();
+          throw new Error("All files are already indexed and up to date.");
+        }
+      },
+    },
+    {
+      title: "Preparing for indexing",
+      task: async (ctx) => {
+        ctx.existingHashes = await ctx.db.getExistingChunkHashes();
+        ctx.chunker = createChunker(ctx.chunkerType);
+      },
+    },
+    {
+      title: "Indexing files",
+      task: (ctx, task) =>
+        task.newListr(
+          ctx.filesToIndex.map((file) => ({
+            title: file.path,
+            task: async (ctx, task) => {
+              if (!clear) {
+                await ctx.db.removeFileChunks(file.path);
+                await ctx.db.removeFileFromIndex(file.path);
+              }
+
+              let content: string;
+              try {
+                content = await readFile(file.path, "utf-8");
+              } catch (readError) {
+                logger.warn(`Could not read ${file.path} as UTF-8, trying with error handling...`);
+                const buffer = await readFile(file.path);
+                const decoder = new TextDecoder("utf-8", { fatal: false });
+                content = decoder.decode(buffer);
+              }
+
+              const fileChunks = chunkText(content, file.path, chunkingOptions, ctx.chunker);
+
+              if (fileChunks.length > 0) {
+                const result = await ctx.db.indexChunks(fileChunks, embeddingProvider, ctx.existingHashes, task);
+                ctx.totalIndexed += result.indexed;
+                ctx.totalSkipped += result.skipped;
+              }
+
+              await ctx.db.markFileIndexed(file.path, file.mtime);
+            },
+          })),
+          { concurrent: false, exitOnError: false }
+        ),
+    },
+    {
+      title: "Finalizing",
+      task: async (ctx) => {
+        try {
+          ctx.stats = await ctx.db.getStats();
+        } catch {
+          ctx.stats = { count: 0 };
+        }
+      },
+    },
+  ]);
+
   try {
-    stats = await db.getStats();
-  } catch {
-    // Table might not exist, that's okay
+    await tasks.run(ctx);
+    logger.info(
+      `Indexing complete! Processed ${ctx.totalIndexed + ctx.totalSkipped} chunks across ${ctx.filesToIndex.length} files`
+    );
+    logger.info(
+      `Added ${ctx.totalIndexed} new chunks (${ctx.totalSkipped} already existed). Total chunks in database: ${ctx.stats.count}`
+    );
+  } catch (error) {
+    if (error instanceof Error && error.message === "All files are already indexed and up to date.") {
+      logger.info("All files are already indexed and up to date.");
+      logger.info(`Total chunks in database: ${ctx.stats.count}`);
+    } else if (error instanceof Error && error.message === "No documents found to index.") {
+      logger.warn("No documents found to index.");
+    } else {
+      throw error;
+    }
   }
-  
-  logger.success(`Indexing complete! Processed ${totalIndexed + totalSkipped} chunks across ${filesToIndex.length} files`);
-  logger.info(`Added ${totalIndexed} new chunks (${totalSkipped} already existed). Total chunks in database: ${stats.count}`);
 }
