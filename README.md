@@ -51,6 +51,7 @@ as Gustave Flaubert wrote to George Sand.”
 - **Multiple Embedding Providers** - Support for VoyageAI, OpenAI, and Ollama
 - **Flexible Document Parsing** - Automatically processes text and markdown files from directories
 - **LanceDB Integration** - Fast vector search using LanceDB with persistent storage (`.rag` files)
+- **Pluggable Chunking Strategies** - Choose between token-based recursive chunking (default) or character-based chunking
 - **Configurable Chunking** - Tunable chunk size and overlap for optimal retrieval
 - **Idempotent Indexing** - Automatically tracks indexed files and skips unchanged files
 - **Per-File Transactions** - All chunks for a file are indexed atomically (all or nothing)
@@ -127,21 +128,47 @@ sequenceDiagram
     CLI->>User: Formatted results with line numbers
 ```
 
-## Chunking Algorithm
+## Chunking Strategies
 
-QuickRAG uses a sophisticated chunking algorithm designed to preserve semantic boundaries while maintaining configurable granularity.
+QuickRAG supports multiple chunking strategies, allowing you to choose the best approach for your use case.
 
-### Algorithm Details
+### Available Strategies
 
-The chunking process follows these steps:
+#### 1. Recursive Token Chunker (Default)
 
-1. **Text Splitting**: Documents are split into chunks of a specified size (default: 1000 characters)
-2. **Sentence Boundary Detection**: Within the last 100 characters of each chunk, the algorithm searches for sentence endings (`.!?` followed by whitespace)
-3. **Boundary Adjustment**: If a sentence boundary is found, the chunk is truncated at that point to avoid splitting sentences
-4. **Overlap Calculation**: The next chunk starts with an overlap (default: 200 characters) to preserve context across boundaries
-5. **Line Number Tracking**: Each chunk tracks its start and end line numbers (1-indexed) for precise source location
+The default strategy uses token-based splitting that respects semantic boundaries. This is the recommended approach for most use cases.
+
+**How it works:**
+1. **Token-based sizing**: Chunks are sized by estimated tokens (default: 500 tokens), which aligns better with embedding model expectations
+2. **Recursive splitting**: Tries to split at boundaries in this order:
+   - Paragraph breaks (`\n\n`)
+   - Line breaks (`\n`)
+   - Sentence endings (`.!?` followed by space)
+   - Other punctuation (`;`, `,`)
+   - Word boundaries
+   - Character boundaries (fallback)
+3. **Boundary preservation**: Always splits at the best available boundary to avoid breaking sentences or paragraphs
+4. **Overlap**: Maintains configurable overlap (default: 50 tokens, ~10%) between chunks
+5. **Line tracking**: Each chunk tracks start/end line numbers for precise source location
+
+This strategy is based on LangChain's RecursiveCharacterTextSplitter but uses token estimation instead of character counts, making it more consistent with embedding model tokenization.
+
+#### 2. Simple Chunker
+
+A character-based chunker that provides backward compatibility and simpler behavior.
+
+**How it works:**
+1. **Character-based sizing**: Chunks are sized by characters (default: 1000 characters)
+2. **Sentence boundary detection**: Within the last 100 characters, searches for sentence endings
+3. **Boundary adjustment**: Truncates at sentence boundaries when found
+4. **Overlap**: Maintains character-based overlap (default: 200 characters)
+5. **Line tracking**: Tracks line numbers for source location
+
+Use this strategy if you need character-based control or are migrating from older configurations.
 
 ### Chunking Example
+
+**Recursive Token Chunker** (default):
 
 ```
 Original Text (lines 1-10):
@@ -154,7 +181,7 @@ Original Text (lines 1-10):
 │ ...                                 │
 └─────────────────────────────────────┘
 
-With chunkSize=100, chunkOverlap=20:
+With strategy=recursive-token, chunkSize=500 tokens, chunkOverlap=50 tokens:
 
 Chunk 1 (lines 1-3):
 ┌─────────────────────────────────────┐
@@ -162,40 +189,65 @@ Chunk 1 (lines 1-3):
 │ Line 2: Over the lazy dog.         │
 │ Line 3: The dog was sleeping.      │
 │ [ends at sentence boundary]        │
+│ [~500 tokens]                       │
 └─────────────────────────────────────┘
 
 Chunk 2 (lines 3-5):
 ┌─────────────────────────────────────┐
-│ ...dog was sleeping. [overlap]      │
+│ ...dog was sleeping. [50 token overlap] │
 │ Line 4: Under a tree.               │
 │ Line 5: It was a sunny day.         │
+│ [~500 tokens]                       │
 └─────────────────────────────────────┘
 ```
+
+The recursive token chunker tries to split at paragraph breaks first, then sentences, preserving semantic boundaries while maintaining token-based sizing.
 
 ### Chunking Parameters
 
 The chunking algorithm can be tuned via configuration:
 
-- **`chunkSize`** (default: 1000): Maximum characters per chunk. Larger chunks provide more context but may reduce precision. Smaller chunks improve granularity but may lose context.
-- **`chunkOverlap`** (default: 200): Characters of overlap between consecutive chunks. Overlap ensures important context at boundaries isn't lost. Too little overlap may fragment related content; too much increases storage and processing costs.
+- **`strategy`** (default: `recursive-token`): Chunking strategy - `recursive-token` (token-based, recommended) or `simple` (character-based)
+- **`chunkSize`**: 
+  - For `recursive-token`: Maximum tokens per chunk (default: 500). The recommended range is 400-512 tokens based on research showing 85-90% recall.
+  - For `simple`: Maximum characters per chunk (default: 1000)
+- **`chunkOverlap`**: 
+  - For `recursive-token`: Token overlap between chunks (default: 50, ~10%). Recommended range is 10-20% of chunk size.
+  - For `simple`: Character overlap between chunks (default: 200)
+
+Larger chunks provide more context but may reduce precision. Smaller chunks improve granularity but may lose context. Overlap ensures important context at boundaries isn't lost.
 
 ### Tuning Recommendations
 
+**For Most Use Cases (Recommended):**
+- `strategy: recursive-token` - Use token-based chunking for best results
+- `chunkSize: 400-512` (tokens) - Research-backed sweet spot for 85-90% recall
+- `chunkOverlap: 50-100` (tokens, ~10-20%) - Standard overlap range
+
 **For Technical Documentation:**
-- `chunkSize: 1500-2000` - Technical docs often have longer, self-contained sections
-- `chunkOverlap: 300-400` - Preserve code examples and explanations that span boundaries
+- `strategy: recursive-token`
+- `chunkSize: 500-600` (tokens) - Technical docs often have longer, self-contained sections
+- `chunkOverlap: 75-100` (tokens) - Preserve code examples and explanations
 
 **For Narrative Text (Novels, Articles):**
-- `chunkSize: 800-1200` - Narrative text benefits from smaller, focused chunks
-- `chunkOverlap: 150-250` - Moderate overlap preserves story flow
+- `strategy: recursive-token`
+- `chunkSize: 400-500` (tokens) - Narrative text benefits from focused chunks
+- `chunkOverlap: 50-75` (tokens) - Moderate overlap preserves story flow
 
 **For Code Documentation:**
-- `chunkSize: 1000-1500` - Balance between code blocks and explanations
-- `chunkOverlap: 200-300` - Ensure code examples aren't split awkwardly
+- `strategy: recursive-token`
+- `chunkSize: 450-550` (tokens) - Balance between code blocks and explanations
+- `chunkOverlap: 50-100` (tokens) - Ensure code examples aren't split awkwardly
 
 **For Dense Academic Papers:**
-- `chunkSize: 2000-3000` - Academic papers have longer, interconnected sections
-- `chunkOverlap: 400-600` - Higher overlap to preserve argument flow
+- `strategy: recursive-token`
+- `chunkSize: 600-800` (tokens) - Academic papers have longer, interconnected sections
+- `chunkOverlap: 100-150` (tokens) - Higher overlap to preserve argument flow
+
+**For Character-Based Control (Legacy):**
+- `strategy: simple`
+- `chunkSize: 1000-1500` (characters)
+- `chunkOverlap: 200-300` (characters)
 
 ## Installation
 
@@ -249,8 +301,9 @@ provider: ollama
 model: nomic-embed-text
 baseUrl: http://localhost:11434
 chunking:
-  chunkSize: 1000
-  chunkOverlap: 200
+  strategy: recursive-token
+  chunkSize: 500
+  chunkOverlap: 50
 ```
 
 ### 2. Configure Your Settings
@@ -262,8 +315,9 @@ provider: openai
 apiKey: sk-your-key-here
 model: text-embedding-3-small
 chunking:
-  chunkSize: 1500
-  chunkOverlap: 300
+  strategy: recursive-token
+  chunkSize: 500
+  chunkOverlap: 50
 ```
 
 ### 3. Index Documents
@@ -290,8 +344,9 @@ QuickRAG uses a configuration file at `~/.config/quickrag/config.yaml` to store 
 - `apiKey`: API key for the provider (can also use environment variables)
 - `model`: Model name for the embedding provider
 - `baseUrl`: Base URL for Ollama (default: `http://localhost:11434`)
-- `chunking.chunkSize`: Chunk size in characters (default: 1000)
-- `chunking.chunkOverlap`: Overlap between chunks in characters (default: 200)
+- `chunking.strategy`: Chunking strategy - `recursive-token` (default) or `simple`
+- `chunking.chunkSize`: Chunk size in tokens (for `recursive-token`, default: 500) or characters (for `simple`, default: 1000)
+- `chunking.chunkOverlap`: Overlap in tokens (for `recursive-token`, default: 50) or characters (for `simple`, default: 200)
 
 ### Indexing Documents
 
@@ -306,7 +361,11 @@ quickrag index ./documents --output my-docs.rag
 Override chunking parameters:
 
 ```sh
-quickrag index ./documents --chunk-size 1500 --chunk-overlap 300 --output my-docs.rag
+# Use token-based chunking with custom size
+quickrag index ./documents --chunker recursive-token --chunk-size 500 --chunk-overlap 50 --output my-docs.rag
+
+# Use character-based chunking (legacy)
+quickrag index ./documents --chunker simple --chunk-size 1000 --chunk-overlap 200 --output my-docs.rag
 ```
 
 Use a different provider:
@@ -433,6 +492,11 @@ quickrag/
 │   ├── parser.ts          # Document parsing and chunking
 │   ├── database.ts        # LanceDB integration
 │   ├── config.ts          # Configuration management
+│   ├── chunkers/          # Chunking strategy implementations
+│   │   ├── base.ts        # Chunker interface
+│   │   ├── recursive-token.ts  # Token-based recursive chunker
+│   │   ├── simple.ts      # Character-based chunker
+│   │   └── index.ts       # Chunker factory
 │   └── embeddings/        # Embedding provider implementations
 │       ├── base.ts
 │       ├── voyageai.ts
@@ -480,7 +544,7 @@ bun run typecheck
 1. **Configuration**: QuickRAG loads settings from `~/.config/quickrag/config.yaml` (or uses defaults)
 2. **Indexing**: 
    - Scans the specified directory for parseable files (text, markdown)
-   - Chunks documents using the configured algorithm (preserving sentence boundaries)
+   - Chunks documents using the configured strategy (token-based recursive or character-based simple)
    - Generates embeddings for each chunk using your chosen provider
    - Stores vectors and metadata in a LanceDB database saved as a `.rag` file
 3. **Querying**: 

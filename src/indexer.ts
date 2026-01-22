@@ -1,19 +1,21 @@
-import { parseDirectory, type ChunkingOptions, type FileInfo, chunkText } from "./parser.js";
+import { parseDirectory, type ChunkerOptions, type FileInfo, chunkText, type DocumentChunk } from "./parser.js";
 import { RAGDatabase } from "./database.js";
 import type { EmbeddingProvider } from "./embeddings/base.js";
 import type { QuickRAGConfig } from "./config.js";
+import { createChunker, type ChunkerType } from "./chunkers/index.js";
 import { readFile } from "fs/promises";
 
 export async function indexDirectory(
   dirPath: string,
   dbPath: string,
   embeddingProvider: EmbeddingProvider,
-  chunkingOptions: ChunkingOptions,
+  chunkingOptions: ChunkerOptions,
   clear: boolean = false,
   config?: QuickRAGConfig
 ): Promise<void> {
-  console.log(`Parsing documents from ${dirPath}...`);
-  const { chunks: allChunks, files } = await parseDirectory(dirPath, chunkingOptions);
+  const chunkerType: ChunkerType = config?.chunking?.strategy || "recursive-token";
+  console.log(`Parsing documents from ${dirPath}... (using ${chunkerType} chunker)`);
+  const { chunks: allChunks, files } = await parseDirectory(dirPath, chunkingOptions, chunkerType);
   
   if (files.length === 0) {
     console.log("No documents found to index.");
@@ -80,7 +82,8 @@ export async function indexDirectory(
         content = decoder.decode(buffer);
       }
       
-      const fileChunks = chunkText(content, file.path, chunkingOptions);
+      const chunker = createChunker(chunkerType);
+      const fileChunks = chunkText(content, file.path, chunkingOptions, chunker);
       
       for (const chunk of fileChunks) {
         allChunksToIndex.push({ chunk, filePath: file.path, mtime: file.mtime });

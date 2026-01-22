@@ -25,7 +25,12 @@ export class RAGDatabase {
   private dimensions: number;
   private db: Awaited<ReturnType<typeof lancedb.connect>> | null = null;
   private concurrencyLimiter: ConcurrencyLimiter;
-  private batchingConfig: Required<QuickRAGConfig["batching"]>;
+  private batchingConfig: {
+    maxTextsPerBatch: number;
+    maxCharsPerBatch: number;
+    maxTokensPerBatch: number;
+    maxConcurrentEmbeddings: number;
+  };
 
   constructor(dbPath: string, dimensions: number, config?: QuickRAGConfig) {
     this.dbPath = dbPath;

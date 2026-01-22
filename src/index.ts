@@ -8,6 +8,7 @@ import { VoyageAIEmbeddingProvider } from "./embeddings/voyageai.js";
 import { OllamaEmbeddingProvider } from "./embeddings/ollama.js";
 import { loadConfig, createDefaultConfig, type QuickRAGConfig } from "./config.js";
 import type { EmbeddingProvider } from "./embeddings/base.js";
+import type { ChunkerType } from "./chunkers/index.js";
 
 interface EmbeddingOptions {
   provider: "openai" | "voyageai" | "ollama";
@@ -81,26 +82,33 @@ program
   .option("-u, --base-url <url>", "Base URL (for Ollama)")
   .option("-o, --output <path>", "Output database path", "index.rag")
   .option("--config <path>", "Path to config file (default: ~/.config/quickrag/config.yaml)")
-  .option("--chunk-size <number>", "Chunk size in characters")
-  .option("--chunk-overlap <number>", "Chunk overlap in characters")
+  .option("--chunker <type>", "Chunking strategy (recursive-token, simple)")
+  .option("--chunk-size <number>", "Chunk size in tokens/characters")
+  .option("--chunk-overlap <number>", "Chunk overlap in tokens/characters")
   .option("--clear", "Clear existing index before indexing (default: skip already indexed files)")
   .action(async (directory, options) => {
     const config = await loadConfig(options.config);
     const embeddingOpts = await parseEmbeddingOptions(options, config);
     
     // Chunking options
+    const chunkerType = (options.chunker || config.chunking?.strategy || "recursive-token") as ChunkerType;
     const chunkSize = options.chunkSize 
       ? parseInt(String(options.chunkSize), 10) 
-      : (config.chunking?.chunkSize || 1000);
+      : (config.chunking?.chunkSize || 500);
     const chunkOverlap = options.chunkOverlap 
       ? parseInt(String(options.chunkOverlap), 10) 
-      : (config.chunking?.chunkOverlap || 200);
+      : (config.chunking?.chunkOverlap || 50);
     
     if (isNaN(chunkSize) || chunkSize <= 0) {
       throw new Error("chunk-size must be a positive number");
     }
     if (isNaN(chunkOverlap) || chunkOverlap < 0) {
       throw new Error("chunk-overlap must be a non-negative number");
+    }
+    
+    // Update config with chunker type if provided
+    if (options.chunker) {
+      config.chunking = { ...config.chunking, strategy: chunkerType };
     }
     
     const embeddingProvider = createEmbeddingProvider(

@@ -9,6 +9,7 @@ export interface QuickRAGConfig {
   model?: string;
   baseUrl?: string;
   chunking?: {
+    strategy?: "recursive-token" | "simple";
     chunkSize?: number;
     chunkOverlap?: number;
   };
@@ -28,8 +29,9 @@ const DEFAULT_CONFIG: QuickRAGConfig = {
   model: "nomic-embed-text",
   baseUrl: "http://localhost:11434",
   chunking: {
-    chunkSize: 1000,
-    chunkOverlap: 200,
+    strategy: "recursive-token",
+    chunkSize: 500,
+    chunkOverlap: 50,
   },
   batching: {
     maxTextsPerBatch: 64,
@@ -80,8 +82,9 @@ export async function createDefaultConfig(): Promise<void> {
   console.log("  - apiKey: Your API key (or set via environment variables)");
   console.log("  - model: Model name for the embedding provider");
   console.log("  - baseUrl: Base URL for Ollama (default: http://localhost:11434)");
-  console.log("  - chunking.chunkSize: Size of text chunks in characters (default: 1000)");
-  console.log("  - chunking.chunkOverlap: Overlap between chunks in characters (default: 200)");
+  console.log("  - chunking.strategy: Chunking strategy - recursive-token or simple (default: recursive-token)");
+  console.log("  - chunking.chunkSize: Size of text chunks in tokens/characters (default: 500)");
+  console.log("  - chunking.chunkOverlap: Overlap between chunks in tokens/characters (default: 50)");
   console.log("  - batching.maxTextsPerBatch: Maximum texts per embedding batch (default: 64)");
   console.log("  - batching.maxCharsPerBatch: Maximum characters per batch (default: 150000)");
   console.log("  - batching.maxTokensPerBatch: Maximum tokens per batch (default: 20000)");
