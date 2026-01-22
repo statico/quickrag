@@ -488,8 +488,26 @@ export class RAGDatabase {
     
     for (const row of allChunks) {
       const record = row as Record<string, unknown>;
-      const filePath = String(record.filePath || "");
-      fileCounts.set(filePath, (fileCounts.get(filePath) || 0) + 1);
+      let filePath = String(record.filePath || "");
+      
+      // Filter out corrupted file paths
+      // Valid file paths should:
+      // - Not contain null bytes or control characters (except newline/tab)
+      // - Not be extremely long (likely concatenated)
+      // - Contain at least one valid path character
+      if (filePath.length > 0 && filePath.length < 1000) {
+        // Remove null bytes and other problematic control characters
+        filePath = filePath.replace(/\0/g, '').replace(/[\x01-\x08\x0B-\x0C\x0E-\x1F\x7F]/g, '');
+        
+        // Check if it looks like a valid file path (contains at least one / or \)
+        if (filePath.includes('/') || filePath.includes('\\') || filePath.length < 100) {
+          fileCounts.set(filePath, (fileCounts.get(filePath) || 0) + 1);
+        } else {
+          logger.debug(`Skipping corrupted file path (length: ${filePath.length}): ${filePath.substring(0, 100)}...`);
+        }
+      } else if (filePath.length >= 1000) {
+        logger.debug(`Skipping extremely long file path (likely corrupted, length: ${filePath.length})`);
+      }
     }
     
     return Array.from(fileCounts.entries())

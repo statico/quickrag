@@ -196,7 +196,15 @@ program
     logger.log(`${"═".repeat(70)}\n`);
     
     for (const stat of fileStats) {
-      logger.log(`  ${stat.filePath.padEnd(60)} ${stat.chunkCount.toString().padStart(6)} chunk${stat.chunkCount !== 1 ? 's' : ''}`);
+      // Truncate very long paths for display and sanitize
+      let displayPath = stat.filePath;
+      if (displayPath.length > 80) {
+        displayPath = displayPath.substring(0, 77) + "...";
+      }
+      // Remove any remaining control characters that might cause display issues
+      displayPath = displayPath.replace(/[\x00-\x1F\x7F-\x9F]/g, '');
+      
+      logger.log(`  ${displayPath.padEnd(60)} ${stat.chunkCount.toString().padStart(6)} chunk${stat.chunkCount !== 1 ? 's' : ''}`);
     }
     
     logger.log("");
