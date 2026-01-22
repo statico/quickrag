@@ -1,6 +1,6 @@
 {
   "name": "quickrag",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "type": "module",
   "description": "A fast and flexible RAG tool for indexing and querying documents",
   "main": "src/index.ts",
